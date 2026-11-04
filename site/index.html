@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Schussental Showdown</title>
+  <meta name="description" content="Capture-the-Flag-Autoschlacht in Ravensburg, Weingarten und Friedrichshafen. Springen, Turbo, Upgrades – direkt im Browser.">
+  <meta name="theme-color" content="#14161c">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚩</text></svg>">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- Hauptmenü -->
+  <section id="scr-menu" class="screen">
+    <div class="menu-bg"></div>
+    <div class="menu-wrap">
+      <div class="logo">
+        <div class="logo-top">SCHUSSENTAL</div>
+        <div class="logo-main">SHOWDOWN</div>
+        <div class="logo-sub">Capture the Flag · Oberschwaben · Vollgas</div>
+      </div>
+      <div class="me-card" id="me-card"></div>
+      <div class="menu-buttons">
+        <button class="btn big primary" data-go="setup">▶ SPIELEN (gegen Bots)</button>
+        <button class="btn big online" data-go="online">🌐 ONLINE MIT FREUNDEN</button>
+        <button class="btn big" data-go="garage">🔧 GARAGE</button>
+        <button class="btn big" data-go="drivers">🧑‍✈️ FAHRER</button>
+        <button class="btn big" data-go="help">🎮 STEUERUNG</button>
+      </div>
+      <div class="menu-foot">
+        <label class="chk"><input type="checkbox" id="opt-sound" checked> Sound</label>
+        <label class="chk"><input type="checkbox" id="opt-aim"> Zielhilfe</label>
+        <span class="credits">Karten: © OpenStreetMap-Mitwirkende (ODbL)</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Spiel einrichten -->
+  <section id="scr-setup" class="screen hidden">
+    <div class="panel">
+      <header><button class="btn back" data-go="menu">←</button><h2>Match einrichten</h2></header>
+      <h3>Stadt wählen</h3>
+      <div class="maps" id="maps"></div>
+      <div class="opts">
+        <div class="opt"><span>Teamgröße</span><div class="seg" id="seg-size"></div></div>
+        <div class="opt"><span>Gegner</span><div class="seg" id="seg-diff"></div></div>
+        <div class="opt"><span>Punkte zum Sieg</span><div class="seg" id="seg-caps"></div></div>
+        <div class="opt"><span>Zeitlimit</span><div class="seg" id="seg-time"></div></div>
+      </div>
+      <div class="setup-foot">
+        <div id="setup-car"></div>
+        <button class="btn big primary" id="btn-start">🏁 LOS GEHT'S</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Online -->
+  <section id="scr-online" class="screen hidden">
+    <div class="panel">
+      <header><button class="btn back" data-go="menu">←</button><h2>Online spielen</h2></header>
+      <p class="hint">Einer erstellt einen Raum und schickt den Code oder Link an die anderen. Kein Konto nötig – alle brauchen nur diese Webseite.</p>
+      <div class="online-grid">
+        <div class="help-box">
+          <h3>🏠 Raum erstellen</h3>
+          <p>Du bist der Host: Das Spiel läuft auf deinem Gerät. Lass den Tab während des Spiels offen und im Vordergrund.</p>
+          <button class="btn big primary" id="btn-host">Raum erstellen</button>
+        </div>
+        <div class="help-box">
+          <h3>🔑 Raum beitreten</h3>
+          <p>Gib den 5-stelligen Code deines Freundes ein.</p>
+          <div class="join-row">
+            <input id="join-code" maxlength="5" placeholder="CODE" autocomplete="off" autocapitalize="characters" spellcheck="false">
+            <button class="btn big primary" id="btn-join">Beitreten</button>
+          </div>
+        </div>
+      </div>
+      <div class="net-status" id="net-status"></div>
+    </div>
+  </section>
+
+  <!-- Lobby -->
+  <section id="scr-lobby" class="screen hidden">
+    <div class="panel wide">
+      <header><button class="btn back" id="btn-lobby-leave">←</button><h2>Lobby</h2>
+        <div class="room-code">Raum <b id="lobby-code"></b></div>
+        <button class="btn" id="btn-copy">🔗 Link kopieren</button>
+      </header>
+      <div class="lobby">
+        <div class="teams">
+          <div class="team-col red"><h3>Team Rot</h3><div id="team-0"></div></div>
+          <div class="team-col blue"><h3>Team Blau</h3><div id="team-1"></div></div>
+        </div>
+        <div class="lobby-side">
+          <h3>Einstellungen <span id="lobby-hostnote" class="hint"></span></h3>
+          <div class="opt"><span>Stadt</span><div class="seg" id="lseg-map"></div></div>
+          <div class="opt"><span>Teamgröße (Rest = Bots)</span><div class="seg" id="lseg-size"></div></div>
+          <div class="opt"><span>Bots</span><div class="seg" id="lseg-diff"></div></div>
+          <div class="opt"><span>Punkte zum Sieg</span><div class="seg" id="lseg-caps"></div></div>
+          <div class="opt"><span>Zeitlimit</span><div class="seg" id="lseg-time"></div></div>
+          <button class="btn big primary" id="btn-lobby-start">🏁 MATCH STARTEN</button>
+          <div class="hint" id="lobby-wait"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Garage -->
+  <section id="scr-garage" class="screen hidden">
+    <div class="panel wide">
+      <header><button class="btn back" data-go="menu">←</button><h2>Garage</h2><div class="coins" id="garage-coins"></div></header>
+      <div class="garage">
+        <div class="car-list" id="car-list"></div>
+        <div class="car-detail">
+          <div class="car-top">
+            <canvas id="car-preview" width="360" height="220"></canvas>
+            <div class="car-info">
+              <h3 id="car-name"></h3>
+              <div class="car-role" id="car-role"></div>
+              <p id="car-desc"></p>
+              <div id="car-action"></div>
+            </div>
+          </div>
+          <div class="stats" id="car-stats"></div>
+          <h3>Upgrades</h3>
+          <div class="upgrades" id="car-upgrades"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Fahrer -->
+  <section id="scr-drivers" class="screen hidden">
+    <div class="panel wide">
+      <header><button class="btn back" data-go="menu">←</button><h2>Wähle deinen Fahrer</h2></header>
+      <p class="hint">Die Crew aus dem Ordner „Fette Bilder“. Alle anderen fahren als Mitspieler oder Gegner mit.</p>
+      <div class="drivers" id="drivers"></div>
+    </div>
+  </section>
+
+  <!-- Hilfe -->
+  <section id="scr-help" class="screen hidden">
+    <div class="panel">
+      <header><button class="btn back" data-go="menu">←</button><h2>So wird gespielt</h2></header>
+      <div class="help">
+        <div class="help-box">
+          <h3>🚩 Ziel</h3>
+          <p>Klau die gegnerische Flagge aus deren Basis und bring sie zu deiner eigenen Basis – aber nur, wenn deine eigene Flagge noch dort ist! Wird ein Flaggenträger abgeschossen, fällt die Flagge auf den Boden. Fahr über deine eigene Flagge, um sie zurückzuholen.</p>
+        </div>
+        <div class="help-box">
+          <h3>⌨️ Tastatur & Maus</h3>
+          <table>
+            <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / Pfeile</td><td>Fahren & Lenken</td></tr>
+            <tr><td>Maus</td><td>Zielen</td></tr>
+            <tr><td>Linke Maustaste / <kbd>F</kbd></td><td>Schießen</td></tr>
+            <tr><td><kbd>Leertaste</kbd></td><td>Springen</td></tr>
+            <tr><td><kbd>Shift</kbd></td><td>Turbo</td></tr>
+            <tr><td><kbd>E</kbd> / Rechtsklick</td><td>Mine legen</td></tr>
+            <tr><td><kbd>Tab</kbd></td><td>Punktetafel</td></tr>
+            <tr><td>Mausrad</td><td>Zoom</td></tr>
+            <tr><td><kbd>Esc</kbd> / <kbd>P</kbd></td><td>Pause</td></tr>
+          </table>
+        </div>
+        <div class="help-box">
+          <h3>📱 Handy & Tablet</h3>
+          <p>Linke Bildschirmhälfte: Daumen ziehen = in diese Richtung fahren. Rechte Hälfte: ziehen = zielen und feuern (ohne Ziehen zielt die Zielhilfe automatisch). Knöpfe für Sprung, Turbo und Mine.</p>
+        </div>
+        <div class="help-box">
+          <h3>🌐 Online</h3>
+          <p>Im Menü „Online mit Freunden“ einen Raum erstellen und den Link teilen. Bis zu 12 Leute, freie Plätze füllen Bots auf. Jeder fährt mit seinem eigenen Auto und seinen Upgrades und bekommt seine Kohle.</p>
+        </div>
+        <div class="help-box">
+          <h3>💡 Tipps</h3>
+          <p>Gelbe Rampen schleudern dich durch die Luft – in der Luft fliegen Kugeln unter dir durch und du kannst Gegner plattmachen. Holzkisten und Strohballen kannst du rammen. Im Bodensee geht dein Auto unter! Mit Kohle aus Matches kaufst du neue Autos und Upgrades.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pause -->
+  <section id="scr-pause" class="screen hidden overlay">
+    <div class="panel small">
+      <h2>Pause</h2>
+      <button class="btn big primary" id="btn-resume">Weiter</button>
+      <button class="btn big" id="btn-restart">Neu starten</button>
+      <button class="btn big" id="btn-quit">Aufgeben (zum Menü)</button>
+    </div>
+  </section>
+
+  <!-- Ende -->
+  <section id="scr-end" class="screen hidden overlay">
+    <div class="panel">
+      <h2 id="end-title"></h2>
+      <div id="end-score" class="end-score"></div>
+      <div id="end-stats" class="end-stats"></div>
+      <div id="end-coins" class="end-coins"></div>
+      <div class="end-buttons">
+        <button class="btn big primary" id="btn-again">Nochmal</button>
+        <button class="btn big primary hidden" id="btn-end-lobby">Zur Lobby</button>
+        <button class="btn big" id="btn-end-garage">Garage</button>
+        <button class="btn big" id="btn-end-menu">Menü</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="loading" class="screen"><div class="loader">Lade Oberschwaben …</div></div>
+
+  <script src="js/vendor/peerjs.min.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/maps.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/world.js"></script>
+  <script src="js/game.js"></script>
+  <script src="js/net.js"></script>
+  <script src="js/ui.js"></script>
+</body>
+</html>

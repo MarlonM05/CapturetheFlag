@@ -1,0 +1,8 @@
+# Statische Seite – kein Build nötig
+[build]
+  publish = "."
+
+[[headers]]
+  for = "/img/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"

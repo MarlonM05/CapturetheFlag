@@ -1,0 +1,3 @@
+# Für "Import from Git" auf Netlify: das Spiel liegt im Ordner site/
+[build]
+  publish = "site"

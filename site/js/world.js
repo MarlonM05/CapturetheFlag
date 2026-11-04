@@ -1,0 +1,496 @@
+'use strict';
+// ---------------------------------------------------------------------------
+// Welt: Kartendaten aufbereiten, Kollision, Navigation, Boden-Kacheln
+// Einheiten: Meter
+// ---------------------------------------------------------------------------
+
+const COL = {
+  outside: '#2b2e2a',
+  ground: '#767b66',
+  paved: '#a39d90',
+  green: '#5d8c45',
+  sand: '#d9c58c',
+  water: '#2f6db0',
+  waterEdge: '#5b9bd8',
+  sidewalk: '#aaa498',
+  asphalt: '#4a4d53',
+  asphaltMain: '#43464c',
+  foot: '#b7ae9c',
+  rail: '#6d6257',
+  stream: '#3f86c9',
+};
+const ROOF = ['#b5533c', '#8e3b2e', '#c96a3f', '#5f9e8a', '#7d8188', '#c9b48a', '#5b6068'];
+const WALL = ['#ece3d2', '#ead5b3', '#dcc6a4', '#f2e9dc', '#d2d9db', '#e8d1c3', '#e2dccb'];
+
+const TILE_PX = 512;       // Kachelgröße in Pixeln (Meter = TILE_PX / Zoom)
+const NAV = 1.5;           // Navigationsraster in Metern
+const HASH = 8;            // Kollisions-Hash in Metern
+const CAM_H = 170;         // Kamerahöhe für die Perspektive
+
+function polyBBox(p) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < p.length; i += 2) {
+    const x = p[i], y = p[i + 1];
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  return [x0, y0, x1, y1];
+}
+function pointInPoly(p, x, y) {
+  let inside = false;
+  for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+    const xi = p[i], yi = p[i + 1], xj = p[j], yj = p[j + 1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function hash32(n) { n = (n ^ 61) ^ (n >>> 16); n = n + (n << 3); n = n ^ (n >>> 4); n = Math.imul(n, 0x27d4eb2d); return (n ^ (n >>> 15)) >>> 0; }
+
+class World {
+  constructor(map) {
+    this.map = map;
+    this.w = map.w; this.h = map.h;
+    // Gebäude
+    this.buildings = map.buildings.map((b, i) => {
+      const bb = polyBBox(b.p);
+      let cx = 0, cy = 0; const n = b.p.length / 2;
+      for (let k = 0; k < b.p.length; k += 2) { cx += b.p[k]; cy += b.p[k + 1]; }
+      cx /= n; cy /= n;
+      // längste Kante -> Firstrichtung
+      let best = 0, ang = 0;
+      for (let k = 0; k < b.p.length; k += 2) {
+        const k2 = (k + 2) % b.p.length;
+        const dx = b.p[k2] - b.p[k], dy = b.p[k2 + 1] - b.p[k + 1];
+        const l = dx * dx + dy * dy;
+        if (l > best) { best = l; ang = Math.atan2(dy, dx); }
+      }
+      // Ausdehnung entlang der Firstachse
+      const ca = Math.cos(ang), sa = Math.sin(ang);
+      let mn = Infinity, mx = -Infinity, mn2 = Infinity, mx2 = -Infinity;
+      for (let k = 0; k < b.p.length; k += 2) {
+        const u = (b.p[k] - cx) * ca + (b.p[k + 1] - cy) * sa;
+        const v = -(b.p[k] - cx) * sa + (b.p[k + 1] - cy) * ca;
+        if (u < mn) mn = u; if (u > mx) mx = u; if (v < mn2) mn2 = v; if (v > mx2) mx2 = v;
+      }
+      const hsh = hash32(i * 7919 + 13);
+      const flat = b.c === 4 || b.h < 4 || (mx - mn) * (mx2 - mn2) > 1800;
+      return {
+        p: b.p, h: b.h, c: b.c, n: b.n, bb, cx, cy, ang, flat,
+        ridge: flat ? null : [cx + ca * (mn * 0.72), cy + sa * (mn * 0.72), cx + ca * (mx * 0.72), cy + sa * (mx * 0.72)],
+        wall: WALL[hsh % WALL.length], roof: ROOF[b.c] || ROOF[0], dist: 0,
+      };
+    });
+    this.roads = map.roads.map(r => ({ ...r, bb: polyBBox(r.p) }));
+    this.areas = map.areas.map(a => ({ ...a, bb: polyBBox(a.p) }));
+    this.water = map.water.map(p => ({ p, bb: polyBBox(p) }));
+    this.trees = [];
+    for (let i = 0; i < map.trees.length; i += 2) {
+      const h = hash32(i);
+      this.trees.push({ x: map.trees[i], y: map.trees[i + 1], r: 2.2 + (h % 100) / 60, h: 7 + (h % 5), hue: h % 3 });
+    }
+    this.labels = map.labels;
+    this.bases = map.bases;
+    this.ramps = map.ramps.map(r => ({ ...r, len: 7, wid: 5 }));
+    this.buildHash();
+    this.buildNav();
+    this.tiles = new Map();
+    this.tileZ = 0;
+  }
+
+  // ---------------- Kollisions-Hash ----------------
+  buildHash() {
+    this.hw = Math.ceil(this.w / HASH); this.hh = Math.ceil(this.h / HASH);
+    const n = this.hw * this.hh;
+    this.hEdges = Array.from({ length: n }, () => []);
+    this.hBld = Array.from({ length: n }, () => []);
+    this.hWater = Array.from({ length: n }, () => []);
+    this.hTrees = Array.from({ length: n }, () => []);
+    const add = (arr, bb, item, pad = 0) => {
+      const x0 = Math.max(0, Math.floor((bb[0] - pad) / HASH)), x1 = Math.min(this.hw - 1, Math.floor((bb[2] + pad) / HASH));
+      const y0 = Math.max(0, Math.floor((bb[1] - pad) / HASH)), y1 = Math.min(this.hh - 1, Math.floor((bb[3] + pad) / HASH));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) arr[y * this.hw + x].push(item);
+    };
+    this.buildings.forEach((b, bi) => {
+      add(this.hBld, b.bb, b);
+      const p = b.p;
+      for (let k = 0; k < p.length; k += 2) {
+        const k2 = (k + 2) % p.length;
+        const e = { ax: p[k], ay: p[k + 1], bx: p[k2], by: p[k2 + 1], h: b.h, b };
+        add(this.hEdges, [Math.min(e.ax, e.bx), Math.min(e.ay, e.by), Math.max(e.ax, e.bx), Math.max(e.ay, e.by)], e);
+      }
+    });
+    this.water.forEach(w => add(this.hWater, w.bb, w));
+    this.trees.forEach(t => add(this.hTrees, [t.x, t.y, t.x, t.y], t, 1));
+  }
+  cell(x, y) {
+    const cx = Math.floor(x / HASH), cy = Math.floor(y / HASH);
+    if (cx < 0 || cy < 0 || cx >= this.hw || cy >= this.hh) return -1;
+    return cy * this.hw + cx;
+  }
+  buildingAt(x, y) {
+    const c = this.cell(x, y); if (c < 0) return null;
+    let best = null;
+    for (const b of this.hBld[c]) {
+      if (x < b.bb[0] || x > b.bb[2] || y < b.bb[1] || y > b.bb[3]) continue;
+      if (pointInPoly(b.p, x, y) && (!best || b.h > best.h)) best = b;
+    }
+    return best;
+  }
+  inWater(x, y) {
+    const c = this.cell(x, y); if (c < 0) return false;
+    for (const w of this.hWater[c]) {
+      if (x < w.bb[0] || x > w.bb[2] || y < w.bb[1] || y > w.bb[3]) continue;
+      if (pointInPoly(w.p, x, y)) return true;
+    }
+    return false;
+  }
+  // Kreis gegen statische Geometrie auflösen. Rückgabe: stärkste Normale oder null
+  collideCircle(o, r, z) {
+    let hit = null;
+    const x0 = Math.max(0, Math.floor((o.x - r) / HASH)), x1 = Math.min(this.hw - 1, Math.floor((o.x + r) / HASH));
+    const y0 = Math.max(0, Math.floor((o.y - r) / HASH)), y1 = Math.min(this.hh - 1, Math.floor((o.y + r) / HASH));
+    const seen = this._seen || (this._seen = new Set()); seen.clear();
+    for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) {
+      const ci = cy * this.hw + cx;
+      for (const e of this.hEdges[ci]) {
+        if (e.h <= z + 0.25 || seen.has(e)) continue;
+        seen.add(e);
+        const dx = e.bx - e.ax, dy = e.by - e.ay;
+        const l2 = dx * dx + dy * dy || 1;
+        let t = ((o.x - e.ax) * dx + (o.y - e.ay) * dy) / l2;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const px = e.ax + dx * t, py = e.ay + dy * t;
+        let nx = o.x - px, ny = o.y - py;
+        const d2 = nx * nx + ny * ny;
+        if (d2 < r * r) {
+          const d = Math.sqrt(d2) || 0.0001;
+          nx /= d; ny /= d;
+          // falls Mittelpunkt im Gebäude: Normale umdrehen
+          if (pointInPoly(e.b.p, o.x, o.y)) { nx = -nx; ny = -ny; o.x = px + nx * r; o.y = py + ny * r; }
+          else { o.x += nx * (r - d); o.y += ny * (r - d); }
+          if (!hit || (r - d) > hit.pen) hit = { nx, ny, pen: r - d, kind: 'b' };
+        }
+      }
+      for (const t of this.hTrees[ci]) {
+        if (t.h <= z || seen.has(t)) continue;
+        seen.add(t);
+        const tr = 0.6;
+        let nx = o.x - t.x, ny = o.y - t.y;
+        const d = Math.hypot(nx, ny);
+        if (d < r + tr) {
+          nx /= d || 1; ny /= d || 1;
+          o.x = t.x + nx * (r + tr); o.y = t.y + ny * (r + tr);
+          if (!hit) hit = { nx, ny, pen: r + tr - d, kind: 't' };
+        }
+      }
+    }
+    // Kartenrand
+    const m = 1;
+    if (o.x < r + m) { o.x = r + m; hit = hit || { nx: 1, ny: 0, pen: 0.1, kind: 'w' }; }
+    if (o.y < r + m) { o.y = r + m; hit = hit || { nx: 0, ny: 1, pen: 0.1, kind: 'w' }; }
+    if (o.x > this.w - r - m) { o.x = this.w - r - m; hit = hit || { nx: -1, ny: 0, pen: 0.1, kind: 'w' }; }
+    if (o.y > this.h - r - m) { o.y = this.h - r - m; hit = hit || { nx: 0, ny: -1, pen: 0.1, kind: 'w' }; }
+    return hit;
+  }
+  // Punkt-Test für Geschosse
+  solidAt(x, y, z) {
+    if (x < 0 || y < 0 || x > this.w || y > this.h) return true;
+    const b = this.buildingAt(x, y);
+    if (b && b.h > z) return true;
+    const c = this.cell(x, y);
+    if (c >= 0) for (const t of this.hTrees[c]) {
+      if (z < 3.5 && (x - t.x) ** 2 + (y - t.y) ** 2 < 0.5) return true;
+    }
+    return false;
+  }
+
+  // ---------------- Navigation ----------------
+  buildNav() {
+    const gw = this.gw = Math.ceil(this.w / NAV), gh = this.gh = Math.ceil(this.h / NAV);
+    const cv = document.createElement('canvas'); cv.width = gw; cv.height = gh;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    const draw = (inflate) => {
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.fillStyle = '#000'; g.fillRect(0, 0, gw, gh);
+      g.setTransform(1 / NAV, 0, 0, 1 / NAV, 0, 0);
+      g.fillStyle = '#fff'; g.strokeStyle = '#fff'; g.lineJoin = 'round';
+      g.lineWidth = inflate * 2;
+      const polys = this.buildings.map(b => b.p).concat(this.water.map(w => w.p));
+      for (const p of polys) {
+        g.beginPath(); g.moveTo(p[0], p[1]);
+        for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
+        g.closePath(); g.fill(); if (inflate > 0) g.stroke();
+      }
+      for (const t of this.trees) { g.beginPath(); g.arc(t.x, t.y, 0.6 + inflate, 0, 7); g.fill(); }
+      for (const c of this.map.crates) if (c.t === 2) {
+        g.save(); g.translate(c.x, c.y); g.rotate(c.a); g.fillRect(-1.6 - inflate, -0.5 - inflate, 3.2 + inflate * 2, 1 + inflate * 2); g.restore();
+      }
+      const d = g.getImageData(0, 0, gw, gh).data;
+      const out = new Uint8Array(gw * gh);
+      for (let i = 0; i < out.length; i++) out[i] = d[i * 4] > 110 ? 1 : 0;
+      for (let x = 0; x < gw; x++) { out[x] = 1; out[(gh - 1) * gw + x] = 1; }
+      for (let y = 0; y < gh; y++) { out[y * gw] = 1; out[y * gw + gw - 1] = 1; }
+      return out;
+    };
+    this.solid = draw(0);
+    this.nav = draw(1.25);
+    this.fields = new Map();
+    this.q = new Int32Array(gw * gh);
+  }
+  navIdx(x, y) {
+    const cx = Math.max(0, Math.min(this.gw - 1, Math.floor(x / NAV)));
+    const cy = Math.max(0, Math.min(this.gh - 1, Math.floor(y / NAV)));
+    return cy * this.gw + cx;
+  }
+  nearestFree(idx, grid = this.nav, maxR = 8) {
+    if (!grid[idx]) return idx;
+    const gw = this.gw, cx = idx % gw, cy = (idx / gw) | 0;
+    for (let r = 1; r <= maxR; r++) {
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+        const x = cx + dx, y = cy + dy;
+        if (x < 0 || y < 0 || x >= gw || y >= this.gh) continue;
+        const i = y * gw + x;
+        if (!grid[i]) return i;
+      }
+    }
+    return idx;
+  }
+  // BFS-Distanzfeld zu einem Ziel (gecacht nach Zielzelle)
+  field(x, y) {
+    let idx = this.nearestFree(this.navIdx(x, y));
+    const key = idx;
+    let f = this.fields.get(key);
+    if (f) { f.used = performance.now(); return f.d; }
+    const gw = this.gw, gh = this.gh, nav = this.nav;
+    const d = new Uint16Array(gw * gh).fill(65535);
+    const q = this.q; let h = 0, t = 0;
+    d[idx] = 0; q[t++] = idx;
+    while (h < t) {
+      const i = q[h++], nd = d[i] + 1;
+      const x = i % gw;
+      if (x > 0 && !nav[i - 1] && d[i - 1] > nd) { d[i - 1] = nd; q[t++] = i - 1; }
+      if (x < gw - 1 && !nav[i + 1] && d[i + 1] > nd) { d[i + 1] = nd; q[t++] = i + 1; }
+      if (i >= gw && !nav[i - gw] && d[i - gw] > nd) { d[i - gw] = nd; q[t++] = i - gw; }
+      if (i < gw * (gh - 1) && !nav[i + gw] && d[i + gw] > nd) { d[i + gw] = nd; q[t++] = i + gw; }
+    }
+    this.fields.set(key, { d, used: performance.now() });
+    if (this.fields.size > 14) {
+      let oldK = null, oldT = Infinity;
+      for (const [k, v] of this.fields) if (v.used < oldT) { oldT = v.used; oldK = k; }
+      this.fields.delete(oldK);
+    }
+    return d;
+  }
+  // Wegpunkt entlang des Feldes ermitteln
+  waypoint(d, x, y, steps = 9) {
+    const gw = this.gw;
+    let i = this.navIdx(x, y);
+    if (this.nav[i] || d[i] === 65535) i = this.nearestFree(i);
+    if (d[i] === 65535) return null;
+    const pts = [];
+    for (let s = 0; s < steps; s++) {
+      let bi = i, bd = d[i];
+      const cx = i % gw;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        if ((cx === 0 && dx < 0) || (cx === gw - 1 && dx > 0)) continue;
+        const j = i + dy * gw + dx;
+        if (j < 0 || j >= d.length) continue;
+        const v = d[j] + (dx && dy ? 0.4 : 0);
+        if (v < bd) { bd = v; bi = j; }
+      }
+      if (bi === i) break;
+      i = bi; pts.push(i);
+    }
+    // weitesten sichtbaren Punkt wählen
+    for (let k = pts.length - 1; k >= 0; k--) {
+      const px = (pts[k] % gw + 0.5) * NAV, py = (((pts[k] / gw) | 0) + 0.5) * NAV;
+      if (k === 0 || this.los(x, y, px, py, this.nav)) return { x: px, y: py, dist: d[i] * NAV };
+    }
+    return { x, y, dist: 0 };
+  }
+  los(x0, y0, x1, y1, grid = this.solid) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const n = Math.ceil(Math.hypot(dx, dy) / (NAV * 0.6));
+    for (let s = 1; s < n; s++) {
+      const x = x0 + dx * s / n, y = y0 + dy * s / n;
+      if (grid[this.navIdx(x, y)]) return false;
+    }
+    return true;
+  }
+  randomFreeNear(x, y, rMin, rMax, rnd = Math.random) {
+    for (let k = 0; k < 60; k++) {
+      const a = rnd() * Math.PI * 2, r = rMin + rnd() * (rMax - rMin);
+      const px = x + Math.cos(a) * r, py = y + Math.sin(a) * r;
+      if (px < 3 || py < 3 || px > this.w - 3 || py > this.h - 3) continue;
+      const i = this.navIdx(px, py);
+      if (!this.nav[i]) {
+        const base = this.field(x, y);
+        if (base[i] !== 65535) return { x: px, y: py };
+      }
+    }
+    return { x, y };
+  }
+
+  // ---------------- Kacheln ----------------
+  getTile(tx, ty, Z) {
+    if (Z !== this.tileZ) { this.tiles.clear(); this.tileZ = Z; this.tileM = TILE_PX / Z; }
+    const key = tx + ',' + ty;
+    let t = this.tiles.get(key);
+    if (t) { this.tiles.delete(key); this.tiles.set(key, t); return t; }
+    t = this.renderTile(tx, ty, Z);
+    this.tiles.set(key, t);
+    if (this.tiles.size > 90) this.tiles.delete(this.tiles.keys().next().value);
+    return t;
+  }
+  renderTile(tx, ty, Z) {
+    const TILE = this.tileM;
+    const c = document.createElement('canvas'); c.width = c.height = TILE_PX;
+    const g = c.getContext('2d');
+    const x0 = tx * TILE, y0 = ty * TILE, x1 = x0 + TILE, y1 = y0 + TILE;
+    g.setTransform(Z, 0, 0, Z, -x0 * Z, -y0 * Z);
+    g.fillStyle = COL.outside; g.fillRect(x0, y0, TILE, TILE);
+    g.fillStyle = COL.ground; g.fillRect(Math.max(0, x0), Math.max(0, y0), Math.min(this.w, x1) - Math.max(0, x0), Math.min(this.h, y1) - Math.max(0, y0));
+    const vis = bb => !(bb[2] < x0 - 8 || bb[0] > x1 + 8 || bb[3] < y0 - 8 || bb[1] > y1 + 8);
+    const path = (p, close) => {
+      g.beginPath(); g.moveTo(p[0], p[1]);
+      for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
+      if (close) g.closePath();
+    };
+    // Bodenrauschen
+    const rs = hash32(tx * 92821 + ty * 68917);
+    for (let i = 0; i < 90; i++) {
+      const h = hash32(rs + i);
+      g.fillStyle = i % 2 ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.04)';
+      g.beginPath(); g.arc(x0 + (h % 1000) / 1000 * TILE, y0 + ((h >>> 10) % 1000) / 1000 * TILE, 0.25 + (h % 7) / 10, 0, 7); g.fill();
+    }
+    for (const a of this.areas) if (a.t === 'green' && vis(a.bb)) { g.fillStyle = COL.green; path(a.p, true); g.fill(); }
+    for (const a of this.areas) if (a.t === 'sand' && vis(a.bb)) { g.fillStyle = COL.sand; path(a.p, true); g.fill(); }
+    for (const a of this.areas) if (a.t === 'paved' && vis(a.bb)) {
+      g.fillStyle = COL.paved; path(a.p, true); g.fill();
+      g.strokeStyle = 'rgba(0,0,0,0.12)'; g.lineWidth = 0.4; g.stroke();
+    }
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    const roads = this.roads.filter(r => vis(r.bb));
+    // Gehwege / Bordstein
+    for (const r of roads) if (r.k <= 1) { g.strokeStyle = COL.sidewalk; g.lineWidth = r.w + 3.2; path(r.p); g.stroke(); }
+    for (const r of roads) if (r.k === 2) { g.strokeStyle = COL.foot; g.lineWidth = r.w; path(r.p); g.stroke(); }
+    for (const r of roads) if (r.k <= 1) { g.strokeStyle = 'rgba(0,0,0,0.25)'; g.lineWidth = r.w + 0.6; path(r.p); g.stroke(); }
+    for (const r of roads) if (r.k <= 1) { g.strokeStyle = r.k === 0 ? COL.asphaltMain : COL.asphalt; g.lineWidth = r.w; path(r.p); g.stroke(); }
+    // Mittellinien
+    g.setLineDash([3, 4]);
+    for (const r of roads) if (r.k === 0) { g.strokeStyle = 'rgba(240,240,230,0.7)'; g.lineWidth = 0.25; path(r.p); g.stroke(); }
+    g.setLineDash([]);
+    // Bahn
+    for (const r of roads) if (r.k === 3) {
+      g.strokeStyle = '#8a8378'; g.lineWidth = 3.2; path(r.p); g.stroke();
+      g.setLineDash([0.4, 0.8]); g.strokeStyle = COL.rail; g.lineWidth = 2.6; path(r.p); g.stroke(); g.setLineDash([]);
+      g.strokeStyle = '#3d3d40'; g.lineWidth = 1.6; path(r.p); g.stroke();
+      g.strokeStyle = '#8a8378'; g.lineWidth = 1.2; path(r.p); g.stroke();
+    }
+    // Wasser
+    for (const w of this.water) if (vis(w.bb)) {
+      g.fillStyle = COL.water; path(w.p, true); g.fill();
+      g.strokeStyle = COL.waterEdge; g.lineWidth = 0.8; g.stroke();
+    }
+    for (const r of roads) if (r.k === 4) { g.strokeStyle = COL.stream; g.lineWidth = r.w; path(r.p); g.stroke(); }
+    if (this.water.some(w => vis(w.bb))) {
+      g.strokeStyle = 'rgba(255,255,255,0.18)'; g.lineWidth = 0.25;
+      for (let i = 0; i < 30; i++) {
+        const h = hash32(rs + 500 + i);
+        const x = x0 + (h % 1000) / 1000 * TILE, y = y0 + ((h >>> 10) % 1000) / 1000 * TILE;
+        if (this.inWater(x, y)) { g.beginPath(); g.moveTo(x - 1.2, y); g.quadraticCurveTo(x, y - 0.6, x + 1.2, y); g.stroke(); }
+      }
+    }
+    // Schatten der Gebäude (Sonne von links oben)
+    g.fillStyle = 'rgba(20,25,30,0.28)';
+    for (const b of this.buildings) {
+      if (!vis([b.bb[0], b.bb[1], b.bb[2] + b.h * 0.5, b.bb[3] + b.h * 0.6])) continue;
+      const ox = Math.min(8, b.h * 0.32), oy = Math.min(9, b.h * 0.38);
+      path(b.p, true); g.fill();
+      g.save(); g.translate(ox, oy); path(b.p, true); g.fill(); g.restore();
+      // Verbindung (Schattenkörper)
+      g.beginPath();
+      for (let k = 0; k < b.p.length; k += 2) {
+        const k2 = (k + 2) % b.p.length;
+        g.moveTo(b.p[k], b.p[k + 1]); g.lineTo(b.p[k2], b.p[k2 + 1]); g.lineTo(b.p[k2] + ox, b.p[k2 + 1] + oy); g.lineTo(b.p[k] + ox, b.p[k + 1] + oy); g.closePath();
+      }
+      g.fill();
+    }
+    // Baumschatten
+    for (const t of this.trees) if (vis([t.x - 5, t.y - 5, t.x + 8, t.y + 8])) {
+      g.beginPath(); g.arc(t.x + 2.2, t.y + 2.6, t.r, 0, 7); g.fill();
+    }
+    // Rampen
+    for (const r of this.ramps) if (vis([r.x - 6, r.y - 6, r.x + 6, r.y + 6])) drawRamp(g, r);
+    // Basen
+    this.bases.forEach((b, i) => {
+      if (!vis([b.x - 14, b.y - 14, b.x + 14, b.y + 14])) return;
+      const tm = TEAM[i];
+      g.fillStyle = tm.color + '40'; g.beginPath(); g.arc(b.x, b.y, 11, 0, 7); g.fill();
+      g.strokeStyle = tm.color; g.lineWidth = 0.8; g.setLineDash([2, 1.2]); g.stroke(); g.setLineDash([]);
+      g.lineWidth = 0.35; g.beginPath(); g.arc(b.x, b.y, 7, 0, 7); g.stroke();
+      g.save(); g.translate(b.x, b.y + 9); g.fillStyle = tm.color; g.font = 'bold 2.4px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText('BASIS ' + tm.short, 0, 0); g.restore();
+    });
+    // Straßennamen & POIs
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (const l of this.labels) {
+      const R = l.t.length * 1.2 + 4;
+      if (l.x + R < x0 || l.x - R > x1 || l.y + R < y0 || l.y - R > y1) continue;
+      g.save(); g.translate(l.x, l.y); g.rotate(l.a || 0);
+      if (l.k === 0) {
+        g.font = '600 2.1px sans-serif'; g.fillStyle = 'rgba(255,255,255,0.55)';
+        g.fillText(l.t, 0, 0);
+      } else if (l.k === 1) {
+        g.font = 'italic 700 2.4px sans-serif'; g.lineWidth = 0.5; g.strokeStyle = 'rgba(0,0,0,0.5)'; g.fillStyle = '#fff6d8';
+        g.strokeText(l.t, 0, 0); g.fillText(l.t, 0, 0);
+      }
+      g.restore();
+    }
+    return c;
+  }
+  // Dekal (Reifenspuren, Brandflecken) direkt auf vorhandene Kacheln malen
+  decal(x, y, r, fn) {
+    const Z = this.tileZ; if (!Z) return;
+    const TILE = this.tileM;
+    const tx0 = Math.floor((x - r) / TILE), tx1 = Math.floor((x + r) / TILE);
+    const ty0 = Math.floor((y - r) / TILE), ty1 = Math.floor((y + r) / TILE);
+    for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+      const t = this.tiles.get(tx + ',' + ty); if (!t) continue;
+      const g = t.getContext('2d');
+      g.setTransform(Z, 0, 0, Z, -tx * TILE * Z, -ty * TILE * Z);
+      fn(g);
+    }
+  }
+  // Minikarte
+  renderMini(size) {
+    const s = size / Math.max(this.w, this.h);
+    const c = document.createElement('canvas'); c.width = Math.ceil(this.w * s); c.height = Math.ceil(this.h * s);
+    const g = c.getContext('2d');
+    g.setTransform(s, 0, 0, s, 0, 0);
+    g.fillStyle = '#59604f'; g.fillRect(0, 0, this.w, this.h);
+    const path = (p, close) => { g.beginPath(); g.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]); if (close) g.closePath(); };
+    for (const a of this.areas) { g.fillStyle = a.t === 'green' ? '#4f7a3b' : a.t === 'sand' ? '#c9b47a' : '#8e897d'; path(a.p, true); g.fill(); }
+    g.lineCap = 'round';
+    for (const r of this.roads) if (r.k <= 2) { g.strokeStyle = r.k === 2 ? '#9d968a' : '#c9c4b8'; g.lineWidth = r.w + 1; path(r.p); g.stroke(); }
+    for (const w of this.water) { g.fillStyle = '#3c7bc4'; path(w.p, true); g.fill(); }
+    for (const b of this.buildings) { g.fillStyle = '#2a2b2e'; path(b.p, true); g.fill(); }
+    return c;
+  }
+}
+
+function drawRamp(g, r) {
+  g.save(); g.translate(r.x, r.y); g.rotate(r.a);
+  const L = r.len, Wd = r.wid;
+  const gr = g.createLinearGradient(-L / 2, 0, L / 2, 0);
+  gr.addColorStop(0, '#6b5a3a'); gr.addColorStop(1, '#d9b45a');
+  g.fillStyle = gr; g.fillRect(-L / 2, -Wd / 2, L, Wd);
+  g.fillStyle = '#222';
+  for (let i = 0; i < 5; i++) g.fillRect(-L / 2 + i * L / 5 + 0.3, -Wd / 2, L / 10, Wd);
+  g.fillStyle = 'rgba(255,220,60,0.9)';
+  g.beginPath(); g.moveTo(L / 2 - 0.4, 0); g.lineTo(L / 2 - 2.2, -1.4); g.lineTo(L / 2 - 2.2, 1.4); g.closePath(); g.fill();
+  g.strokeStyle = '#2a2014'; g.lineWidth = 0.3; g.strokeRect(-L / 2, -Wd / 2, L, Wd);
+  g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(L / 2, -Wd / 2, 1.2, Wd);
+  g.restore();
+}
