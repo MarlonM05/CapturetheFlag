@@ -35,7 +35,7 @@ const PROP = [
 // ---------------- Eingabe ----------------
 const Input = {
   keys: {}, mouse: { x: 0, y: 0, down: false, right: false, moved: false },
-  touch: { active: false, move: null, aim: null, jump: false, boost: false, mine: false },
+  touch: { active: false, move: null, aim: null, jump: false, boost: false, mine: false, drift: false },
   init(canvas) {
     addEventListener('keydown', e => {
       if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
@@ -54,6 +54,7 @@ const Input = {
       Sound.init();
       this.touch.active = true;
       for (const t of e.changedTouches) {
+        if (Input.onTouchUi && Input.onTouchUi(t.clientX, t.clientY)) continue;
         const btn = this.touchButton(t.clientX, t.clientY);
         if (btn === 'cam') { if (Input.onKey) Input.onKey('KeyC'); continue; }
         if (btn) { this.touch[btn] = t.identifier; continue; }
@@ -74,7 +75,7 @@ const Input = {
     const tend = e => {
       for (const t of e.changedTouches) {
         for (const k of ['move', 'aim']) if (this.touch[k] && this.touch[k].id === t.identifier) this.touch[k] = null;
-        for (const k of ['jump', 'boost', 'mine']) if (this.touch[k] === t.identifier) this.touch[k] = false;
+        for (const k of ['jump', 'boost', 'mine', 'drift']) if (this.touch[k] === t.identifier) this.touch[k] = false;
       }
       e.preventDefault();
     };
@@ -91,6 +92,7 @@ const Input = {
       { id: 'jump', label: 'SPRUNG', x: bx - r * 2.4, y: by, r },
       { id: 'boost', label: 'TURBO', x: bx - r * 1.4, y: by - r * 2.2, r },
       { id: 'mine', label: 'MINE', x: bx - r * 3.9, y: by - r * 1.7, r: r * 0.8 },
+      { id: 'drift', label: 'DRIFT', x: bx - r * 0.1, y: by - r * 4.2, r: r * 0.8 },
       { id: 'cam', label: 'KAMERA', x: innerWidth - r * 0.9, y: r * 3.2, r: r * 0.6 },
     ];
   },
@@ -154,7 +156,8 @@ class Car {
   constructor(game, def, lv, driver, team, isPlayer) {
     this.id = CAR_ID++;
     this.game = game; this.def = def; this.lv = lv; this.driver = driver; this.team = team; this.isPlayer = isPlayer;
-    this.st = carStats(def, lv);
+    this.ups = { spd: 0, arm: 0, dmg: 0 }; this.xp = 0; this.pts = 0; this.lvlGiven = 0;
+    this.st = carStats(def, lv, this.ups);
     this.shape = SHAPE[def.shape];
     this.w = WEAPONS[def.weapon];
     this.range = this.w.speed * this.w.life * (this.w.accel ? 1.4 : 1);
@@ -180,6 +183,12 @@ class Car {
     this.lastSkid = null;
   }
   get speed() { return Math.hypot(this.vx, this.vy); }
+  // Werte nach Match-Upgrade neu berechnen
+  recalc() {
+    const old = this.st.hp;
+    this.st = carStats(this.def, this.lv, this.ups);
+    if (this.alive) this.hp = Math.min(this.st.hp, this.hp + Math.max(0, this.st.hp - old));
+  }
 }
 
 // ---------------- Spiel ----------------
@@ -203,13 +212,14 @@ class Game {
     this.mode = opts.mode || 'local';
     this.isHost = this.mode === 'host'; this.isClient = this.mode === 'client';
     this.events = []; this.rtt = 0.1;
-    const roster = opts.roster || Game.buildRoster(opts, [{ key: 'local', driver: opts.driver, car: opts.car, upgrades: opts.upgrades || {}, team: 0, human: !this.demo }]);
+    const roster = opts.roster || Game.buildRoster({ ...opts, bots: true }, [{ key: 'local', name: this.demo ? null : (opts.name || 'Spieler'), driver: opts.driver, car: opts.car, upgrades: opts.upgrades || {}, team: 0, human: !this.demo }]);
     const me = opts.me || 'local';
     this.cars = [];
     for (const r of roster) {
       const def = CARS.find(c => c.id === r.car) || CARS[0];
       const c = new Car(this, def, r.upgrades || {}, driverById(r.driver), r.team, r.key === me && !this.demo);
       c.id = r.id; c.key = r.key; c.human = !!r.human;
+      c.name = (r.name || c.driver.name || 'Bot').slice(0, 18);
       if (c.human || this.isClient) c.bot = null;
       else if (c.bot) c.bot.role = r.role || 'attack';
       c.remote = this.isHost && c.human && r.key !== me;
@@ -243,17 +253,19 @@ class Game {
     const roster = [];
     let id = 1;
     const used = new Set(humans.map(h => h.driver));
-    const others = DRIVERS.filter(d => !used.has(d.id)).sort(() => Math.random() - 0.5);
+    const pool = activeDrivers();
+    const others = pool.filter(d => !used.has(d.id)).sort(() => Math.random() - 0.5);
     const lvRange = [[0, 1], [1, 3], [3, 5]][opts.difficulty] || [1, 3];
     let di = 0;
     for (const h of humans) roster.push({ ...h, id: id++ });
+    if (opts.bots === false) return roster;
     for (let team = 0; team < 2; team++) {
       const have = humans.filter(h => h.team === team).length;
       for (let i = have; i < opts.teamSize; i++) {
         const lv = {};
         for (const u of UPGRADES) lv[u.id] = Math.round(rand(lvRange[0], lvRange[1]));
-        const drv = others.length ? others[di++ % others.length] : pick(DRIVERS);
-        roster.push({ key: 'bot' + id, id: id++, car: pick(CARS).id, upgrades: lv, driver: drv.id, team, human: false, role: i % 3 === 1 ? 'defend' : 'attack' });
+        const drv = others.length ? others[di++ % others.length] : null;
+        roster.push({ key: 'bot' + id, id: id++, car: pick(CARS).id, upgrades: lv, driver: drv ? drv.id : '', name: drv ? drv.name : 'Bot ' + id, team, human: false, role: i % 3 === 1 ? 'defend' : 'attack' });
       }
     }
     return roster;
@@ -276,6 +288,10 @@ class Game {
   updateZoom() {
     const base = Math.hypot(innerWidth, innerHeight) / 150;
     this.Z = Math.round(clamp(base * this.zoomMul, 3.2, 16) * this.dpr * 4) / 4;
+  }
+  tapUp(x, y) {
+    for (const b of this.upBoxes || []) if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { this.requestUp(b.k); return true; }
+    return false;
   }
   toggleCam() {
     if (!this.r3d) return this.camMode;
@@ -302,7 +318,10 @@ class Game {
     requestAnimationFrame(this.frame);
   }
 
-  say(text, color = '#fff', dur = 2, big = true) { this.msgs.push({ text, color, t: dur, max: dur, big }); if (this.msgs.length > 3) this.msgs.shift(); }
+  say(text, color = '#fff', dur = 2, big = true) {
+    const same = this.msgs.find(m => m.text === text);
+    if (same) { same.t = same.max = dur; return; }
+    this.msgs.push({ text, color, t: dur, max: dur, big }); if (this.msgs.length > 3) this.msgs.shift(); }
   log(entry) {
     entry.t = 7; this.feed.unshift(entry); if (this.feed.length > 6) this.feed.pop();
     if (this.isHost) this.events.push(['l', { kind: entry.kind, text: entry.text, flagTeam: entry.flagTeam, cap: entry.cap, fx: entry.fx, a: entry.a ? entry.a.id : 0, b: entry.b ? entry.b.id : 0 }]);
@@ -343,6 +362,37 @@ class Game {
     if (x !== undefined) this.particles.add({ type: 'text', text: '+' + n + ' 💰' + (why ? ' ' + why : ''), x, y: y - 2, vx: 0, vy: -4, life: 1.6, max: 1.6, size: 0, color: '#ffe66d', Z: this.Z, alpha: 1 });
     Sound.play('coin');
   }
+  // ---------------- XP & Match-Upgrades ----------------
+  addXp(c, n) {
+    if (!c || this.isClient || this.state === 'over') return;
+    c.xp += n;
+    const lvl = Math.min(MATCH_UPS.length * MATCH_UP_MAX, Math.floor(c.xp / XP.perLevel));
+    while (c.lvlGiven < lvl) {
+      c.lvlGiven++; c.pts++;
+      if (c.isPlayer) { this.say('UPGRADE BEREIT!  [1] Tempo  [2] Panzerung  [3] Waffe', '#7dd3ff', 2.5, false); Sound.play('pickup'); }
+      if (c.bot) { const opts = MATCH_UPS.filter(u => c.ups[u.k] < MATCH_UP_MAX); if (opts.length) this.applyUp(c, pick(opts).k); }
+    }
+  }
+  applyUp(c, k) {
+    if (!c || c.pts <= 0 || !(k in c.ups) || c.ups[k] >= MATCH_UP_MAX) return false;
+    c.ups[k]++; c.pts--; c.recalc();
+    if (c.isPlayer) { const u = MATCH_UPS.find(x => x.k === k); this.say(`${u.icon} ${u.name} Stufe ${c.ups[k]}`, '#7dd3ff', 1.4, false); Sound.play('buy'); }
+    return true;
+  }
+  requestUp(k) {
+    const p = this.player;
+    if (!p || p.pts <= 0 || p.ups[k] >= MATCH_UP_MAX) return;
+    if (this.isClient) { this.upT = performance.now(); if (typeof Net !== 'undefined') Net.send({ t: 'up', k }); p.pts--; p.ups[k]++; p.recalc(); const u = MATCH_UPS.find(x => x.k === k); this.say(`${u.icon} ${u.name} Stufe ${p.ups[k]}`, '#7dd3ff', 1.4, false); Sound.play('buy'); }
+    else this.applyUp(p, k);
+  }
+  // Treffer-Rückmeldung für den Schützen
+  hitFx(target, amt) {
+    this.hitT = 0.14;
+    Sound.play('hit', 0.8);
+    const a = this.dmgAcc || (this.dmgAcc = new Map());
+    const e = a.get(target) || { amt: 0, t: performance.now() };
+    e.amt += amt; a.set(target, e);
+  }
   vol(x, y) { const d = Math.sqrt(d2(x, y, this.cam.x, this.cam.y)); return clamp(1 - d / 140, 0, 1); }
 
   update(dt) {
@@ -379,6 +429,16 @@ class Game {
   }
   updateCommon(dt) {
     this.particles.update(dt);
+    this.hitT = Math.max(0, (this.hitT || 0) - dt);
+    // Schadenszahlen gesammelt anzeigen (kein Zahlensalat bei der Minigun)
+    if (this.dmgAcc && this.dmgAcc.size) {
+      const now = performance.now();
+      for (const [t, e] of this.dmgAcc) {
+        if (now - e.t < 280) continue;
+        this.dmgAcc.delete(t);
+        if (e.amt >= 1) this.particles.add({ type: 'text', text: '-' + Math.round(e.amt), x: t.x + rand(-1, 1), y: t.y - 1, vx: 0, vy: -3, life: 0.9, max: 0.9, size: 0, color: '#ff7a5c', Z: this.Z, alpha: 1 });
+      }
+    }
     for (const f of this.feed) f.t -= dt;
     for (const m of this.msgs) m.t -= dt;
     this.msgs = this.msgs.filter(m => m.t > 0);
@@ -418,7 +478,7 @@ class Game {
     const c = this.player, inp = c.input, K = Input.keys;
     if (!c.alive) return;
     const T = Input.touch;
-    if (T.active && (T.move || T.aim || T.jump || T.boost || T.mine)) {
+    if (T.active && (T.move || T.aim || T.jump || T.boost || T.mine || T.drift)) {
       inp.thr = 0; inp.steer = 0;
       if (T.move) {
         const dx = T.move.x - T.move.ox, dy = T.move.y - T.move.oy;
@@ -437,7 +497,7 @@ class Game {
         if (Math.hypot(dx, dy) > 10) { inp.aim = this.camMode === 'chase' ? this.camYaw + Math.atan2(dx, -dy) : Math.atan2(dy, dx); inp.fire = Math.hypot(dx, dy) > 28; inp.manualAim = true; }
         else { inp.fire = false; inp.manualAim = false; }
       } else { inp.fire = false; inp.manualAim = false; }
-      inp.jump = !!T.jump; inp.boost = !!T.boost; inp.mine = !!T.mine;
+      inp.jump = !!T.jump; inp.boost = !!T.boost; inp.mine = !!T.mine; inp.drift = !!T.drift;
       if (!inp.manualAim || this.opts.autoAim) this.autoAim(c, !inp.manualAim);
       return;
     }
@@ -445,7 +505,8 @@ class Game {
     inp.steer = (K.KeyD || K.ArrowRight ? 1 : 0) - (K.KeyA || K.ArrowLeft ? 1 : 0);
     inp.jump = !!K.Space;
     inp.boost = !!(K.ShiftLeft || K.ShiftRight);
-    inp.mine = !!(K.KeyE || K.KeyQ || Input.mouse.right);
+    inp.mine = !!(K.KeyE || Input.mouse.right);
+    inp.drift = !!(K.KeyQ || K.KeyX);
     inp.fire = Input.mouse.down || !!K.KeyF || !!K.Enter;
     if (Input.mouse.moved) {
       const mw = this.screenToWorld(Input.mouse.x, Input.mouse.y);
@@ -511,12 +572,21 @@ class Game {
       else if (t < 0) { target = -st.speed * 0.5 * -t; acc = vF > 0 ? st.accel * 2.2 : st.accel * 0.8; }
       if (vF < target) vF = Math.min(target, vF + acc * dt);
       else if (vF > target) vF = Math.max(target, vF - (t === 0 ? 7 : acc) * dt);
-      const grip = c.boosting ? 5 : 9;
+      // Drift: Handbremse (Q) – Heck bricht aus, Auto lenkt stärker ein
+      c.drifting = !!inp.drift && Math.abs(vF) > 7 && playing;
+      const grip = c.drifting ? 2.6 : c.boosting ? 5 : 9;
       vL *= Math.exp(-grip * dt);
+      if (c.drifting) {
+        vF -= Math.sign(vF) * 3 * dt;
+        if (Math.random() < 0.6) {
+          const px = -fy, py = fx, s = Math.random() < 0.5 ? 1 : -1;
+          this.particles.add({ x: c.x - fx * c.def.len * 0.4 + px * s, y: c.y - fy * c.def.len * 0.4 + py * s, z: 0.3, vz: 1.2, vx: rand(-1.5, 1.5), vy: rand(-1.5, 1.5), life: 0.9, max: 0.9, size: 0.6, grow: 2.2, color: '#d9d9d9', alpha: 0.45 });
+        }
+      }
       const turnF = clamp(Math.abs(vF) / 7, 0, 1) * Math.sign(vF || 1);
       // bei hohem Tempo weniger empfindlich
       const tf = c.bot ? 1 : 0.8 * (1 - 0.35 * clamp(Math.abs(vF) / st.speed, 0, 1.3));
-      c.a += steer * st.turn * tf * dt * turnF * (c.boosting ? 0.8 : 1);
+      c.a += steer * st.turn * tf * dt * turnF * (c.drifting ? 1.4 : c.boosting ? 0.8 : 1);
       if (c.boosting && Math.random() < 0.7) {
         this.particles.add({ x: c.x - fx * c.def.len * 0.55, y: c.y - fy * c.def.len * 0.55, vx: -fx * 10 + rand(-2, 2), vy: -fy * 10 + rand(-2, 2), life: 0.25, max: 0.25, size: 0.6, grow: -1.5, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffffff', add: true });
       }
@@ -527,11 +597,21 @@ class Game {
         for (let i = 0; i < 10; i++) this.particles.add({ x: c.x, y: c.y, vx: rand(-6, 6), vy: rand(-6, 6), life: 0.5, max: 0.5, size: 0.7, grow: 2, color: '#d7d0c0', alpha: 0.5, drag: 4 });
       }
       // Reifenspuren
-      if (Math.abs(vL) > 4.5 || (c.boosting && Math.random() < 0.3) || (t !== 0 && Math.abs(vF) < 6 && Math.abs(target) > 10)) this.skid(c);
+      if (c.drifting || Math.abs(vL) > 4.5 || (c.boosting && Math.random() < 0.3) || (t !== 0 && Math.abs(vF) < 6 && Math.abs(target) > 10)) this.skid(c);
       else c.lastSkid = null;
     } else {
-      c.a += steer * st.turn * 0.35 * dt;
+      c.drifting = false;
+      c.a += steer * st.turn * (c.boosting ? 0.75 : 0.35) * dt;
       c.lastSkid = null;
+      if (c.boosting) {
+        // Nitro in der Luft: Schub nach vorne und Auftrieb -> gleiten / fliegen
+        vF = Math.min(vF + st.accel * 1.3 * dt, st.speed * 1.5);
+        vL *= Math.exp(-2.5 * dt);
+        c.vz += GRAV * 0.84 * dt;
+        if (c.vz < -3) c.vz += 14 * dt;
+        if (c.z > 32 && c.vz > 0) c.vz *= 0.9;
+        if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6, y: c.y - fy * c.def.len * 0.6, z: c.z + 0.6, vz: -2, vx: -fx * 12 + rand(-2, 2), vy: -fy * 12 + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
+      }
     }
     c.vx = fx * vF - fy * vL; c.vy = fy * vF + fx * vL;
     // Rampen
@@ -543,8 +623,11 @@ class Game {
         const u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
         if (Math.abs(u) < r.len / 2 && Math.abs(v) < r.wid / 2 + 0.5) {
           const along = c.vx * ca + c.vy * sa;
-          if (along > 6) {
-            c.vz = 5 + along * 0.34; c.rampCd = 0.8; c.onGround = false;
+          if (along > 4) {
+            c.vz = clamp(4.5 + along * 0.32, 7, 15.5); c.rampCd = 0.8; c.onGround = false; c.z = Math.max(c.z, 0.4);
+            // auf Rampenrichtung ausrichten, damit man nicht seitlich abprallt
+            const sp2 = Math.hypot(c.vx, c.vy);
+            c.vx = c.vx * 0.5 + ca * sp2 * 0.5; c.vy = c.vy * 0.5 + sa * sp2 * 0.5;
             Sound.play('jump', this.vol(c.x, c.y));
             if (c.isPlayer) this.say('Sprung!', '#ffe66d', 0.7, false);
           }
@@ -565,9 +648,10 @@ class Game {
         if (vn < 0) {
           c.vx -= 1.3 * vn * hit.nx; c.vy -= 1.3 * vn * hit.ny;
           c.vx *= 0.92; c.vy *= 0.92;
-          if (-vn > 13) {
-            if (this.isClient && c === this.player) c.crashAcc += (-vn - 13) * 1.6 / c.def.mass;
-            this.damage(c, (-vn - 13) * 1.6 / c.def.mass, null, 'crash');
+          if (-vn > 22) {
+            const cdmg = (-vn - 22) * 0.45 / c.def.mass;
+            if (this.isClient && c === this.player) c.crashAcc += cdmg;
+            this.damage(c, cdmg, null, 'crash');
             Sound.play('clank', this.vol(c.x, c.y));
             if (c.isPlayer) this.shake = Math.min(1, this.shake + 0.3);
             for (let i = 0; i < 6; i++) this.particles.add({ type: 'spark', x: c.x - hit.nx * c.def.radius, y: c.y - hit.ny * c.def.radius, vx: rand(-12, 12), vy: rand(-12, 12), life: 0.3, max: 0.3, size: 0.15, color: '#ffd27a', add: true });
@@ -866,7 +950,10 @@ class Game {
     c.hp -= amt; c.flashT = 0.08;
     if (by && by !== c) { c.hitBy.set(by, performance.now()); c.lastAttacker = by; c.lastAttackT = performance.now(); }
     if (c.bot) c.bot.hurtT = 1.2;
-    if (by && by.isPlayer && kind !== 'crash') Sound.play('hit', 0.8);
+    if (by && kind !== 'crash' && by !== c) {
+      if (by.isPlayer) this.hitFx(c, amt);
+      else if (by.remote) this.events.push(['h', by.id, c.id, r1(amt)]);
+    }
     if (c.isPlayer) this.shake = Math.min(1, this.shake + amt / 120);
     if (c.hp <= 0) {
       if (!by || by === c) { const la = c.lastAttacker; if (la && performance.now() - c.lastAttackT < 4000) by = la; }
@@ -884,9 +971,10 @@ class Game {
     if (by) {
       by.kills++; by.score += 10;
       if (by.human) this.earn(REWARD.kill, c.x, c.y, '', by);
+      this.addXp(by, XP.kill);
       const now = performance.now();
       for (const [o, t] of c.hitBy) {
-        if (o !== by && o.alive !== undefined && o.team !== c.team && now - t < 6000) { o.assists++; o.score += 4; if (o.human) this.earn(REWARD.assist, c.x, c.y, 'Assist', o); }
+        if (o !== by && o.alive !== undefined && o.team !== c.team && now - t < 6000) { o.assists++; o.score += 4; if (o.human) this.earn(REWARD.assist, c.x, c.y, 'Assist', o); this.addXp(o, XP.assist); }
       }
     }
     this.log({ a: by, b: c, kind });
@@ -946,11 +1034,13 @@ class Game {
           c.score += 3;
           this.log({ text: 'hat die Flagge geklaut!', a: c, flagTeam: f.team, fx: 'pick' });
           if (c.human) this.earn(REWARD.pickup, c.x, c.y, '', c);
+          this.addXp(c, XP.pickup);
         } else if (f.team === c.team && f.state === 'dropped') {
           this.resetFlag(f, false);
           c.returns++; c.score += 5;
           this.log({ text: 'hat die Flagge zurückgeholt', a: c, flagTeam: f.team, fx: 'ret' });
           if (c.human) this.earn(REWARD.ret, c.x, c.y, 'Rettung', c);
+          this.addXp(c, XP.ret);
         }
       }
       if (c.flag >= 0 && this.flags[c.team].state === 'base' && d2(c.x, c.y, bases[c.team].x, bases[c.team].y) < 9 * 9) {
@@ -959,6 +1049,7 @@ class Game {
         this.score[c.team]++; c.caps++; c.score += 25;
         this.log({ text: 'hat gepunktet! 🏁', a: c, flagTeam: f.team, cap: true, fx: 'cap' });
         if (c.human) this.earn(REWARD.capture, c.x, c.y, 'Punkt!', c);
+        this.addXp(c, XP.capture);
         if (this.score[c.team] >= this.opts.capLimit) this.endGame();
       }
     }
@@ -1009,7 +1100,7 @@ class Game {
       t: 's', n: this.netSeq, st: this.state, tm: r1(this.time), ct: r2(this.countT), sc: this.score,
       c: this.cars.map(c => [c.id, r2(c.x), r2(c.y), r2(c.a), r2(c.turret), r2(c.z), r1(c.vx), r1(c.vy), Math.ceil(c.hp), c.alive ? 1 : 0, c.flag,
         c.boosting ? 1 : 0, c.protect > 0 ? 1 : 0, r1(c.respawnT), c.kills, c.deaths, c.caps, c.returns, c.score, c.earned, c.mines, r2(c.boost),
-        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life]),
+        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg]),
       f: this.flags.map(f => [f.state, r1(f.x), r1(f.y), f.carrier ? f.carrier.id : 0, r1(f.dropT)]),
       pr: this.props.map(p => (p.alive ? 1 : 0)).join(''),
       pk: this.pickups.map(p => [r1(p.x), r1(p.y), p.t, p.active ? 1 : 0]),
@@ -1022,7 +1113,9 @@ class Game {
   // Mitspieler meldet Position + Eingaben
   remoteInput(key, d) {
     const c = this.cars.find(o => o.key === key);
-    if (!c || !c.human || d.t !== 'st') return;
+    if (!c || !c.human) return;
+    if (d.t === 'up') { this.applyUp(c, String(d.k)); return; }
+    if (d.t !== 'st') return;
     const num = (v, a, b) => { v = +v; return Number.isFinite(v) ? clamp(v, a, b) : 0; };
     const i = c.input;
     i.aim = num(d.tu, -10, 10); i.fire = !!d.f; i.mine = !!d.m; i.boost = !!d.b; i.thr = 0; i.steer = 0;
@@ -1109,6 +1202,15 @@ class Game {
       c.hp = a[8]; c.alive = !!a[9]; c.flag = a[10]; c.protect = a[12] ? 1 : 0; c.respawnT = a[13];
       c.kills = a[14]; c.deaths = a[15]; c.caps = a[16]; c.returns = a[17]; c.score = a[18]; c.earned = a[19]; c.mines = a[20];
       c.killedBy = a[22] ? this.byId.get(a[22]) : null;
+      c.xp = a[25] || 0;
+      if (a[27] !== undefined) {
+        const u = String(a[27]);
+        const nu = { spd: +u[0] || 0, arm: +u[1] || 0, dmg: +u[2] || 0 };
+        // eigene, gerade gewählte Upgrades nicht vom alten Stand überschreiben lassen
+        const mine = c === me && (nu.spd + nu.arm + nu.dmg) < (c.ups.spd + c.ups.arm + c.ups.dmg) && now - (this.upT || 0) < 1500;
+        if (!mine && (nu.spd !== c.ups.spd || nu.arm !== c.ups.arm || nu.dmg !== c.ups.dmg)) { c.ups = nu; const hp = c.hp; c.recalc(); c.hp = hp; }
+        if (!mine) c.pts = a[26] || 0;
+      }
       if (c.alive && c.hp < oldHp - 0.5) c.flashT = 0.08;
       if (c === me) {
         // Die eigene Position bestimmt der Spieler selbst – nur beim Neustart übernimmt er die vom Host
@@ -1157,6 +1259,7 @@ class Game {
         }
         case 'e': if (o === me) this.earnFx(e[2], e[3], e[4], e[5]); break;
         case 'p': if (o) { this.pickupFx(o, e[2]); if (o === me && e[2] === 1) me.boost = me.st.boost; } break;
+        case 'h': if (o === me) { const t = this.byId.get(e[2]); if (t) this.hitFx(t, e[3]); } break;
         case 'kb': if (o === me && me.alive) { me.vx += e[2]; me.vy += e[3]; if (e[5]) me.vz = e[4]; else me.vz += e[4]; me.onGround = false; } break;
         case 'k': { const p = this.props[e[1]]; if (p && p.alive) { p.alive = false; this.breakPropFx(p, this.byId.get(e[2])); } break; }
       }
@@ -1602,11 +1705,12 @@ class Game {
     const px = cx + (x - cx) * k, py = cy + (y - cy) * k;
     return { x: (px - cx) * this.Z + this.canvas.width / 2, y: (py - cy) * this.Z + this.canvas.height / 2 };
   }
-  drawFace(g, id, x, y, r, ring) {
+  drawFace(g, id, x, y, r, ring, label) {
     const img = DRIVER_IMG[id];
     g.save(); g.beginPath(); g.arc(x, y, r, 0, 7); g.closePath();
-    g.fillStyle = '#222'; g.fill();
+    g.fillStyle = '#2a2f3b'; g.fill();
     if (img && img.complete && img.naturalWidth) { g.clip(); g.drawImage(img, x - r, y - r, r * 2, r * 2); }
+    else if (label) { g.fillStyle = '#fff'; g.font = `800 ${Math.round(r * 1.1)}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label.trim()[0].toUpperCase(), x, y + r * 0.05); }
     g.restore();
     if (ring) { g.strokeStyle = ring; g.lineWidth = Math.max(1.5, r * 0.16); g.beginPath(); g.arc(x, y, r, 0, 7); g.stroke(); }
   }
@@ -1621,12 +1725,12 @@ class Game {
       if (s.x < -50 || s.y < -50 || s.x > this.canvas.width + 50 || s.y > this.canvas.height + 50) continue;
       const tm = TEAM[c.team];
       const y = s.y - 26 * D;
-      const name = c.driver.name;
+      const name = c.name;
       const tw = g.measureText(name).width;
       const w = tw + 26 * D;
       const x = s.x - w / 2;
       g.fillStyle = 'rgba(0,0,0,0.5)'; g.beginPath(); g.roundRect(x, y - 9 * D, w, 18 * D, 9 * D); g.fill();
-      this.drawFace(g, c.driver.id, x + 9 * D, y, 8 * D, tm.color);
+      this.drawFace(g, c.driver.id, x + 9 * D, y, 8 * D, tm.color, c.name);
       g.fillStyle = tm.light; g.fillText(name, x + 21 * D, y);
       // HP
       const hw = 36 * D;
@@ -1672,28 +1776,94 @@ class Game {
     if (this.isHost) info += '  ·  🌐 Host';
     if (this.isClient) info += `  ·  🌐 ${typeof Net !== 'undefined' && Net.linkMode === 'relay' ? 'über Server' : 'direkt'} · Ping ${Math.round(this.rtt * 1000)} ms`;
     g.fillText(info, 12 * D, 52 * D);
-    // Spieler-Panel unten links
-    const px = 12 * D, py = SH - 92 * D;
-    g.fillStyle = 'rgba(10,12,18,0.72)'; g.beginPath(); g.roundRect(px, py, 280 * D, 80 * D, 12 * D); g.fill();
-    this.drawFace(g, p.driver.id, px + 38 * D, py + 40 * D, 28 * D, TEAM[p.team].color);
-    g.fillStyle = '#fff'; g.font = `700 ${13 * D}px system-ui, sans-serif`;
-    g.fillText(p.driver.name, px + 76 * D, py + 15 * D);
-    g.fillStyle = '#aaa'; g.font = `500 ${10 * D}px system-ui, sans-serif`;
-    g.fillText(p.def.name + ' · ' + p.w.name, px + 76 * D, py + 29 * D);
-    const bar = (y, f, col, label) => {
-      g.fillStyle = 'rgba(255,255,255,0.12)'; g.beginPath(); g.roundRect(px + 76 * D, y, 190 * D, 10 * D, 5 * D); g.fill();
-      g.fillStyle = col; g.beginPath(); g.roundRect(px + 76 * D, y, Math.max(0.01, 190 * D * clamp(f, 0, 1)), 10 * D, 5 * D); g.fill();
-      g.fillStyle = 'rgba(255,255,255,0.85)'; g.font = `700 ${8 * D}px system-ui, sans-serif`; g.fillText(label, px + 80 * D, y + 5.5 * D);
-    };
-    const hf = p.alive ? p.hp / p.st.hp : 0;
-    bar(py + 40 * D, hf, hf > 0.5 ? '#4fd06a' : hf > 0.25 ? '#f0c040' : '#ff4b3a', `PANZERUNG ${Math.ceil(p.alive ? p.hp : 0)}`);
+    // ---- Spieler-Anzeige: groß und mittig unten ----
     const touch = Input.touch.active;
-    bar(py + 55 * D, p.boost / p.st.boost, '#38b6ff', touch ? 'TURBO' : 'TURBO [Shift]');
-    g.font = `600 ${9.5 * D}px system-ui, sans-serif`;
-    g.fillStyle = p.jumpCd <= 0 ? '#7dff8a' : '#888';
-    g.fillText(p.jumpCd <= 0 ? (touch ? '⬆ Sprung bereit' : '⬆ Sprung bereit [Leertaste]') : `⬆ Sprung ${p.jumpCd.toFixed(1)}s`, px + 76 * D, py + 73 * D);
-    g.fillStyle = p.mines > 0 ? '#ffb14d' : '#888';
-    g.fillText(`● Minen ${p.mines}` + (touch ? '' : ' [E]'), px + 212 * D, py + 73 * D);
+    const bw = Math.min(460 * D, SW * (touch ? 0.36 : 0.42)), bx = (SW - bw) / 2;
+    const by = SH - (touch ? 64 : 70) * D;
+    const hf = p.alive ? clamp(p.hp / p.st.hp, 0, 1) : 0;
+    const big = (y, h, f, c1, c2, label, right) => {
+      g.fillStyle = 'rgba(8,10,14,0.78)'; g.beginPath(); g.roundRect(bx - 3 * D, y - 3 * D, bw + 6 * D, h + 6 * D, (h + 6 * D) / 2); g.fill();
+      if (f > 0.002) {
+        const gr = g.createLinearGradient(bx, y, bx, y + h); gr.addColorStop(0, c1); gr.addColorStop(1, c2);
+        g.fillStyle = gr; g.beginPath(); g.roundRect(bx, y, Math.max(h, bw * f), h, h / 2); g.fill();
+      }
+      g.font = `800 ${Math.round(h * 0.62)}px system-ui, sans-serif`; g.textBaseline = 'middle';
+      g.lineWidth = 3 * D; g.strokeStyle = 'rgba(0,0,0,0.6)'; g.fillStyle = '#fff';
+      g.textAlign = 'left'; g.strokeText(label, bx + 10 * D, y + h / 2 + 1); g.fillText(label, bx + 10 * D, y + h / 2 + 1);
+      g.textAlign = 'right'; g.strokeText(right, bx + bw - 10 * D, y + h / 2 + 1); g.fillText(right, bx + bw - 10 * D, y + h / 2 + 1);
+    };
+    const hc = hf > 0.5 ? ['#7dff8a', '#2fa84d'] : hf > 0.25 ? ['#ffe06b', '#d99a14'] : ['#ff8a7a', '#c9261b'];
+    if (hf < 0.25 && p.alive) { g.globalAlpha = 0.6 + 0.4 * Math.sin(time * 10); }
+    big(by - 6 * D, 26 * D, hf, hc[0], hc[1], '❤ PANZERUNG', `${Math.ceil(p.alive ? p.hp : 0)} / ${p.st.hp}`);
+    g.globalAlpha = 1;
+    const nf = clamp(p.boost / p.st.boost, 0, 1);
+    big(by + 30 * D, 17 * D, nf, '#8fe3ff', '#1f8fe0', touch ? '🚀 NITRO' : '🚀 NITRO [Shift]', p.boosting ? (p.onGround === false ? 'FLIEGEN!' : 'BOOST!') : Math.round(nf * 100) + ' %');
+    // XP-Leiste
+    const lvlXp = p.xp % XP.perLevel, maxed = p.lvlGiven >= MATCH_UPS.length * MATCH_UP_MAX;
+    const xy = by - 22 * D;
+    g.fillStyle = 'rgba(8,10,14,0.6)'; g.fillRect(bx, xy, bw, 6 * D);
+    g.fillStyle = '#c084fc'; g.fillRect(bx, xy, bw * (maxed ? 1 : lvlXp / XP.perLevel), 6 * D);
+    g.font = `700 ${10 * D}px system-ui, sans-serif`; g.textAlign = 'left'; g.textBaseline = 'bottom';
+    g.lineWidth = 3 * D; g.strokeStyle = 'rgba(0,0,0,0.6)'; g.fillStyle = '#e9d5ff';
+    const xpTxt = `⭐ ${p.xp} XP · Upgrades ${p.ups.spd + p.ups.arm + p.ups.dmg}/${MATCH_UPS.length * MATCH_UP_MAX}`;
+    g.strokeText(xpTxt, bx, xy - 2 * D); g.fillText(xpTxt, bx, xy - 2 * D);
+    g.textBaseline = 'middle';
+    // Upgrade-Auswahl
+    this.upBoxes = [];
+    if (p.pts > 0) {
+      const w3 = Math.min(150 * D, (bw - 16 * D) / 3), h3 = 46 * D, y3 = xy - 22 * D - h3;
+      const x0 = SW / 2 - (w3 * 3 + 16 * D) / 2;
+      g.textAlign = 'center';
+      g.font = `800 ${12 * D}px system-ui, sans-serif`; g.fillStyle = '#7dd3ff';
+      g.fillText(`UPGRADE VERFÜGBAR (${p.pts})` + (touch ? ' – antippen' : ' – Taste 1 / 2 / 3'), SW / 2, y3 - 10 * D);
+      MATCH_UPS.forEach((u, i) => {
+        const x = x0 + i * (w3 + 8 * D), full = p.ups[u.k] >= MATCH_UP_MAX;
+        g.fillStyle = full ? 'rgba(40,40,48,0.7)' : `rgba(30,70,120,${0.75 + 0.15 * Math.sin(time * 5 + i)})`;
+        g.beginPath(); g.roundRect(x, y3, w3, h3, 10 * D); g.fill();
+        g.strokeStyle = full ? '#555' : '#7dd3ff'; g.lineWidth = 2 * D; g.stroke();
+        g.fillStyle = full ? '#888' : '#fff'; g.font = `800 ${12 * D}px system-ui, sans-serif`;
+        g.fillText(`${touch ? '' : '[' + u.key + '] '}${u.icon} ${u.name}`, x + w3 / 2, y3 + 16 * D);
+        g.font = `600 ${10 * D}px system-ui, sans-serif`; g.fillStyle = full ? '#777' : '#bfe6ff';
+        g.fillText(full ? 'MAX' : '●'.repeat(p.ups[u.k]) + '○'.repeat(MATCH_UP_MAX - p.ups[u.k]), x + w3 / 2, y3 + 33 * D);
+        this.upBoxes.push({ k: u.k, x: x / this.dpr, y: y3 / this.dpr, w: w3 / this.dpr, h: h3 / this.dpr });
+      });
+    }
+    // Porträt + Infos links unten
+    const px = 12 * D, py = SH - 76 * D;
+    g.textAlign = 'left';
+    g.fillStyle = 'rgba(10,12,18,0.72)'; g.beginPath(); g.roundRect(px, py, Math.min(250 * D, bx - 24 * D), 64 * D, 12 * D); g.fill();
+    this.drawFace(g, p.driver.id, px + 32 * D, py + 32 * D, 24 * D, TEAM[p.team].color, p.name);
+    if (bx - 24 * D > 120 * D) {
+      g.fillStyle = '#fff'; g.font = `700 ${13 * D}px system-ui, sans-serif`;
+      g.fillText(p.name, px + 64 * D, py + 15 * D);
+      g.fillStyle = '#aaa'; g.font = `500 ${10 * D}px system-ui, sans-serif`;
+      g.fillText(p.def.name + ' · ' + p.w.name, px + 64 * D, py + 30 * D);
+      g.font = `600 ${9.5 * D}px system-ui, sans-serif`;
+      g.fillStyle = p.jumpCd <= 0 ? '#7dff8a' : '#888';
+      g.fillText(p.jumpCd <= 0 ? (touch ? '⬆ Sprung' : '⬆ Sprung [Leer]') : `⬆ ${p.jumpCd.toFixed(1)}s`, px + 64 * D, py + 46 * D);
+      g.fillStyle = p.mines > 0 ? '#ffb14d' : '#888';
+      g.fillText(`● Minen ${p.mines}` + (touch ? '' : ' [E]'), px + 150 * D, py + 46 * D);
+      if (!touch) { g.fillStyle = p.drifting ? '#ffe66d' : '#888'; g.fillText('↯ Drift [Q]', px + 64 * D, py + 58 * D); }
+    }
+    // Fadenkreuz + Treffermarker
+    if (!touch && Input.mouse.moved && p.alive) {
+      const mx = Input.mouse.x * this.dpr, my = Input.mouse.y * this.dpr;
+      g.strokeStyle = 'rgba(255,255,255,0.9)'; g.lineWidth = 2 * D;
+      g.beginPath(); g.arc(mx, my, 11 * D, 0, 7); g.stroke();
+      g.fillStyle = '#fff'; g.beginPath(); g.arc(mx, my, 2 * D, 0, 7); g.fill();
+      if (this.hitT > 0) {
+        g.strokeStyle = '#ff5a4a'; g.lineWidth = 3 * D; const r1_ = 7 * D, r2_ = 15 * D;
+        g.beginPath();
+        for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) { g.moveTo(mx + sx * r1_, my + sy * r1_); g.lineTo(mx + sx * r2_, my + sy * r2_); }
+        g.stroke();
+      }
+      // wohin der Turm gerade zielt
+      const tx = p.x + Math.cos(p.turret) * 28, ty = p.y + Math.sin(p.turret) * 28;
+      const ts = this.worldToScreen(tx, ty, p.z + 1.2);
+      if (!ts.behind) { g.strokeStyle = 'rgba(255,230,110,0.85)'; g.lineWidth = 2 * D; g.beginPath(); g.arc(ts.x, ts.y, 5 * D, 0, 7); g.stroke(); }
+    } else if (touch && this.hitT > 0) {
+      g.fillStyle = '#ff5a4a'; g.font = `900 ${28 * D}px system-ui`; g.textAlign = 'center'; g.fillText('✕', SW / 2, SH / 2);
+    }
     // Killfeed
     g.textAlign = 'right';
     let fy = 16 * D;
@@ -1712,14 +1882,14 @@ class Game {
         parts.push({ t: f.kind === 'water' ? '🌊' : f.kind === 'boom' ? '💥' : f.kind === 'ram' ? '🚗💨' : f.kind === 'stomp' ? '⬇️' : f.kind === 'crash' ? '🧱' : '🔫', c: '#fff' });
         if (f.a) parts.push({ face: f.a });
       }
-      const wBox = parts.reduce((s, q) => s + (q.face ? (g.measureText(q.face.driver.name).width + 26 * D) : g.measureText(q.t).width + 8 * D), 0) + 10 * D;
+      const wBox = parts.reduce((s, q) => s + (q.face ? (g.measureText(q.face.name).width + 26 * D) : g.measureText(q.t).width + 8 * D), 0) + 10 * D;
       g.fillStyle = 'rgba(10,12,18,0.6)'; g.beginPath(); g.roundRect(x - wBox, fy - 11 * D, wBox + 6 * D, 22 * D, 8 * D); g.fill();
       for (const q of parts) {
         if (q.face) {
           g.fillStyle = TEAM[q.face.team].light;
-          g.fillText(q.face.driver.name, x, fy);
-          x -= g.measureText(q.face.driver.name).width + 12 * D;
-          this.drawFace(g, q.face.driver.id, x, fy, 8 * D, TEAM[q.face.team].color);
+          g.fillText(q.face.name, x, fy);
+          x -= g.measureText(q.face.name).width + 12 * D;
+          this.drawFace(g, q.face.driver.id, x, fy, 8 * D, TEAM[q.face.team].color, q.face.name);
           x -= 14 * D;
         } else { g.fillStyle = q.c; g.fillText(q.t, x, fy); x -= g.measureText(q.t).width + 8 * D; }
       }
@@ -1764,7 +1934,7 @@ class Game {
       if (s.x > mrg && s.y > mrg && s.x < SW - mrg && s.y < SH - mrg) continue;
       if (f.team === p.team && f.state === 'base') continue;
       const ang = Math.atan2(s.y - SH / 2, s.x - SW / 2);
-      const ex = clamp(s.x, mrg, SW - mrg), ey = clamp(s.y, mrg + 40 * D, SH - mrg);
+      const ex = clamp(s.x, mrg, SW - mrg), ey = clamp(s.y, mrg + 40 * D, SH - 130 * D);
       g.save(); g.translate(ex, ey); g.rotate(ang);
       g.fillStyle = TEAM[f.team].color; g.strokeStyle = '#fff'; g.lineWidth = 2 * D;
       g.beginPath(); g.moveTo(18 * D, 0); g.lineTo(-6 * D, -11 * D); g.lineTo(-2 * D, 0); g.lineTo(-6 * D, 11 * D); g.closePath(); g.fill(); g.stroke();
@@ -1803,9 +1973,9 @@ class Game {
       g.font = `800 ${22 * D}px system-ui, sans-serif`; g.fillStyle = '#fff';
       const k = p.killedBy;
       if (k) {
-        const t = 'Abgeschossen von ' + k.driver.name;
+        const t = 'Abgeschossen von ' + k.name;
         g.fillText(t, SW / 2 + 20 * D, SH * 0.55 + 30 * D);
-        this.drawFace(g, k.driver.id, SW / 2 - g.measureText(t).width / 2 - 8 * D, SH * 0.55 + 30 * D, 18 * D, TEAM[k.team].color);
+        this.drawFace(g, k.driver.id, SW / 2 - g.measureText(t).width / 2 - 8 * D, SH * 0.55 + 30 * D, 18 * D, TEAM[k.team].color, k.name);
       } else g.fillText('Totalschaden!', SW / 2, SH * 0.55 + 30 * D);
       g.font = `600 ${15 * D}px system-ui, sans-serif`; g.fillStyle = '#ffe66d';
       g.fillText(`Neustart in ${Math.max(0, p.respawnT).toFixed(1)} s`, SW / 2, SH * 0.55 + 64 * D);
@@ -1855,9 +2025,9 @@ class Game {
       const list = this.cars.filter(c => c.team === team).sort((a, b) => b.score - a.score);
       for (const c of list) {
         if (c.isPlayer) { g.fillStyle = 'rgba(255,255,255,0.08)'; g.fillRect(x + 8 * D, ry - rowH / 2, w - 16 * D, rowH); }
-        this.drawFace(g, c.driver.id, x + 24 * D, ry, 10 * D, TEAM[team].color);
+        this.drawFace(g, c.driver.id, x + 24 * D, ry, 10 * D, TEAM[team].color, c.name);
         g.textAlign = 'left'; g.fillStyle = TEAM[team].light; g.font = `700 ${12 * D}px system-ui, sans-serif`;
-        const nm = c.driver.name + (c.isPlayer ? ' (Du)' : '');
+        const nm = c.name + (c.isPlayer ? ' (Du)' : '');
         g.fillText(nm, x + 40 * D, ry);
         const nw = g.measureText(nm).width;
         g.fillStyle = '#888'; g.font = `500 ${9 * D}px system-ui, sans-serif`;

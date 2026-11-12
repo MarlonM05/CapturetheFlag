@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bilder-Admin</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
+  <style>
+    :root { --bg: #14161c; --panel: #1d2029; --line: rgba(255,255,255,.1); --text: #f1f1ee; --muted: #a3a7b0; --accent: #ffcf3f; --green: #4fd06a; --red: #ff6b5a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 1000px; margin: 0 auto; padding: 20px 16px 60px; }
+    h1 { margin: 0 0 4px; font-size: 24px; }
+    .hint { color: var(--muted); font-size: 14px; margin: 0 0 16px; line-height: 1.45; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+    input[type=password], input[type=text] { font: inherit; color: var(--text); background: #0f1116; border: 2px solid #3a4152; border-radius: 10px; padding: 9px 12px; min-width: 0; }
+    input:focus { outline: none; border-color: var(--accent); }
+    button { font: inherit; font-weight: 700; color: var(--text); background: #2a2f3b; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 9px 14px; cursor: pointer; }
+    button.primary { background: linear-gradient(180deg, #ffd651, #f0a91d); color: #1d1400; border-color: #ffe28a; }
+    button.danger { color: var(--red); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+    .img { background: #161921; border: 2px solid var(--line); border-radius: 14px; padding: 10px; text-align: center; transition: opacity .15s; }
+    .img.off { opacity: .45; border-style: dashed; }
+    .img img { width: 110px; height: 110px; border-radius: 50%; object-fit: cover; display: block; margin: 4px auto 8px; border: 3px solid #333a48; }
+    .img.on img { border-color: var(--green); }
+    .img input[type=text] { width: 100%; text-align: center; font-weight: 700; padding: 6px; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 999px; background: #2a2f3b; color: var(--muted); margin: 6px 0; }
+    .switch { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 6px 0; font-weight: 700; cursor: pointer; user-select: none; }
+    .switch input { width: 42px; height: 24px; appearance: none; background: #3a4152; border-radius: 999px; position: relative; cursor: pointer; transition: background .15s; }
+    .switch input::after { content: ''; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .15s; }
+    .switch input:checked { background: var(--green); }
+    .switch input:checked::after { left: 21px; }
+    .status { min-height: 22px; font-weight: 700; color: var(--accent); margin-top: 8px; }
+    .status.err { color: var(--red); }
+    .hidden { display: none !important; }
+    #preview { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; border: 2px solid #333a48; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>🛠️ Bilder-Admin – Schussental Showdown</h1>
+  <p class="hint">Hier legst du fest, welche Profilbilder im Spiel erscheinen. Ausgeschaltete Bilder sieht niemand mehr – weder in der Auswahl noch bei Bots. Änderungen gelten sofort für alle, die das Spiel neu laden. <a href="./">← zum Spiel</a></p>
+
+  <section class="card" id="login">
+    <h2 style="margin-top:0">Anmelden</h2>
+    <p class="hint">Mit demselben Admin-Passwort wie die Giffig-/Make-It-Meme-Admin-Seite.</p>
+    <form class="row" id="login-form">
+      <input type="password" id="pw" placeholder="Admin-Passwort" autocomplete="current-password" required>
+      <button class="primary" type="submit">Anmelden</button>
+    </form>
+    <div class="status" id="login-status"></div>
+  </section>
+
+  <section id="admin" class="hidden">
+    <div class="card">
+      <h2 style="margin-top:0">Neues Bild hochladen</h2>
+      <form class="row" id="up-form">
+        <img id="preview" class="hidden" alt="">
+        <input type="file" id="file" accept="image/jpeg,image/png,image/webp" required>
+        <input type="text" id="up-name" maxlength="24" placeholder="Name (z. B. Spitzname)" required>
+        <label class="switch"><input type="checkbox" id="up-active" checked> sofort aktiv</label>
+        <button class="primary" type="submit" id="up-btn">Hochladen</button>
+      </form>
+      <p class="hint" style="margin:8px 0 0">Das Bild wird automatisch quadratisch auf 256 × 256 Pixel verkleinert.</p>
+      <div class="status" id="up-status"></div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Alle Bilder <span id="count" class="tag"></span></h2>
+        <div class="row">
+          <button id="all-on">Alle an</button>
+          <button id="all-off">Alle aus</button>
+          <button id="logout">Abmelden</button>
+        </div>
+      </div>
+      <div class="status" id="list-status"></div>
+      <div class="grid" id="grid"></div>
+    </div>
+  </section>
+</main>
+<script>
+'use strict';
+const SUPA_URL = 'https://wpqrfrrhufnvdxcdqrcv.supabase.co';
+const SUPA_KEY = 'sb_publishable_lvsuefwTpYIo55gci4xPlA_1miuYt9J';
+const FN = SUPA_URL + '/functions/v1/ctf-admin';
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let token = null, images = [];
+try { const t = JSON.parse(sessionStorage.getItem('ctf_admin') || 'null'); if (t && t.exp > Date.now()) token = t.token; } catch (e) { /* egal */ }
+
+function status(el, msg, err) { el.textContent = msg || ''; el.classList.toggle('err', !!err); }
+async function call(action, data = {}) {
+  const r = await fetch(FN, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SUPA_KEY }, body: JSON.stringify({ action, token, ...data }) });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && action !== 'login') { logout(); throw new Error('Sitzung abgelaufen – bitte neu anmelden.'); }
+  if (!r.ok) throw new Error(j.error || ('Fehler ' + r.status));
+  return j;
+}
+function src(img) { return img.bundled ? 'img/fahrer/' + img.id + '.jpg' : SUPA_URL + '/storage/v1/object/public/ctf-images/' + img.file; }
+function show(loggedIn) { $('#login').classList.toggle('hidden', loggedIn); $('#admin').classList.toggle('hidden', !loggedIn); }
+function logout() { token = null; sessionStorage.removeItem('ctf_admin'); show(false); }
+
+function render() {
+  const g = $('#grid'); g.innerHTML = '';
+  $('#count').textContent = `${images.filter(i => i.active).length} von ${images.length} aktiv`;
+  for (const img of images) {
+    const d = document.createElement('div');
+    d.className = 'img ' + (img.active ? 'on' : 'off');
+    d.innerHTML = `<img src="${esc(src(img))}" alt="" loading="lazy">
+      <input type="text" maxlength="24" value="${esc(img.name)}" aria-label="Name">
+      <div class="tag">${img.bundled ? 'eingebaut' : 'hochgeladen'}</div>
+      <label class="switch"><input type="checkbox" ${img.active ? 'checked' : ''}> ${img.active ? 'aktiv' : 'aus'}</label>
+      ${img.bundled ? '' : '<button class="danger">Löschen</button>'}`;
+    const [nameIn, sw] = d.querySelectorAll('input');
+    sw.onchange = async () => {
+      sw.disabled = true;
+      try { const r = await call('set', { id: img.id, active: sw.checked }); Object.assign(img, r.image); render(); }
+      catch (e) { sw.checked = !sw.checked; status($('#list-status'), e.message, true); sw.disabled = false; }
+    };
+    nameIn.onchange = async () => {
+      try { const r = await call('set', { id: img.id, name: nameIn.value }); Object.assign(img, r.image); status($('#list-status'), 'Name gespeichert.'); }
+      catch (e) { nameIn.value = img.name; status($('#list-status'), e.message, true); }
+    };
+    const del = d.querySelector('button.danger');
+    if (del) del.onclick = async () => {
+      if (!confirm(`„${img.name}“ endgültig löschen?`)) return;
+      try { await call('delete', { id: img.id }); images = images.filter(i => i !== img); render(); }
+      catch (e) { status($('#list-status'), e.message, true); }
+    };
+    g.appendChild(d);
+  }
+}
+async function load() {
+  status($('#list-status'), 'Lade …');
+  try { images = (await call('list')).images || []; status($('#list-status'), ''); render(); }
+  catch (e) { status($('#list-status'), e.message, true); }
+}
+async function setAll(active) {
+  status($('#list-status'), 'Speichere …');
+  try {
+    for (const img of images.filter(i => i.active !== active)) { const r = await call('set', { id: img.id, active }); Object.assign(img, r.image); }
+    status($('#list-status'), 'Fertig.'); render();
+  } catch (e) { status($('#list-status'), e.message, true); }
+}
+
+$('#login-form').onsubmit = async e => {
+  e.preventDefault();
+  status($('#login-status'), 'Prüfe …');
+  try {
+    const r = await call('login', { password: $('#pw').value });
+    token = r.token; sessionStorage.setItem('ctf_admin', JSON.stringify(r));
+    $('#pw').value = ''; status($('#login-status'), ''); show(true); load();
+  } catch (err) { status($('#login-status'), err.message, true); }
+};
+$('#logout').onclick = logout;
+$('#all-on').onclick = () => setAll(true);
+$('#all-off').onclick = () => { if (confirm('Wirklich alle Bilder ausschalten? Dann spielen alle ohne Fotos.')) setAll(false); };
+
+// Bild auf 256×256 zuschneiden (Mitte) und als JPEG senden
+function squareJpeg(file) {
+  return new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => {
+      const s = Math.min(im.width, im.height), c = document.createElement('canvas'); c.width = c.height = 256;
+      c.getContext('2d').drawImage(im, (im.width - s) / 2, (im.height - s) / 2, s, s, 0, 0, 256, 256);
+      res(c.toDataURL('image/jpeg', 0.85));
+      URL.revokeObjectURL(im.src);
+    };
+    im.onerror = () => rej(new Error('Bild konnte nicht gelesen werden.'));
+    im.src = URL.createObjectURL(file);
+  });
+}
+$('#file').onchange = async () => {
+  const f = $('#file').files[0]; if (!f) return;
+  try { $('#preview').src = await squareJpeg(f); $('#preview').classList.remove('hidden'); } catch (e) { status($('#up-status'), e.message, true); }
+  if (!$('#up-name').value) $('#up-name').value = f.name.replace(/\.[^.]+$/, '').replace(/[^A-Za-zÄÖÜäöüß0-9 _.-]/g, ' ').trim().slice(0, 24);
+};
+$('#up-form').onsubmit = async e => {
+  e.preventDefault();
+  const f = $('#file').files[0]; if (!f) return;
+  $('#up-btn').disabled = true; status($('#up-status'), 'Lade hoch …');
+  try {
+    const url = await squareJpeg(f);
+    const r = await call('upload', { name: $('#up-name').value.trim(), type: 'image/jpeg', data: url.split(',')[1], active: $('#up-active').checked });
+    images.push(r.image); render();
+    $('#up-form').reset(); $('#preview').classList.add('hidden');
+    status($('#up-status'), `„${r.image.name}“ hochgeladen.`);
+  } catch (err) { status($('#up-status'), err.message, true); }
+  $('#up-btn').disabled = false;
+};
+
+if (token) { show(true); load(); } else show(false);
+</script>
+</body>
+</html>

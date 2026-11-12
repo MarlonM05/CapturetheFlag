@@ -25,9 +25,21 @@ const R3 = {
     return c;
   },
   faceTex: new Map(),
-  face(id) {
-    let t = this.faceTex.get(id);
-    if (!t) { t = new THREE.Texture(DRIVER_IMG[id]); t.needsUpdate = true; this.faceTex.set(id, t); }
+  face(id, label) {
+    const key = id || ('#' + (label || '?'));
+    let t = this.faceTex.get(key);
+    if (!t) {
+      const img = DRIVER_IMG[id];
+      if (img && img.complete && img.naturalWidth) { t = new THREE.Texture(img); t.needsUpdate = true; }
+      else {
+        const c = document.createElement('canvas'); c.width = c.height = 64;
+        const g = c.getContext('2d'); g.fillStyle = '#2a2f3b'; g.fillRect(0, 0, 64, 64);
+        g.fillStyle = '#fff'; g.font = '800 40px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(((label || '?').trim()[0] || '?').toUpperCase(), 32, 34);
+        t = new THREE.CanvasTexture(c);
+      }
+      this.faceTex.set(key, t);
+    }
     return t;
   },
 };
@@ -542,7 +554,7 @@ class Renderer3D {
     // Fahrer-Gesicht durchs Schiebedach (immer nach Norden ausgerichtet)
     const fr = c.shape.faceR * 0.95;
     const faceG = this.track(new THREE.CircleGeometry(fr, 24)); faceG.rotateX(-Math.PI / 2);
-    const face = new THREE.Mesh(faceG, this.track(new THREE.MeshBasicMaterial({ map: R3.face(c.driver.id) })));
+    const face = new THREE.Mesh(faceG, this.track(new THREE.MeshBasicMaterial({ map: R3.face(c.driver.id, c.name) })));
     face.position.set(faceX, faceY, 0);
     root.add(face);
     const ring = new THREE.Mesh(this.track(new THREE.RingGeometry(fr, fr + 0.12, 24)), this.track(new THREE.MeshBasicMaterial({ color: tm.light, side: THREE.DoubleSide })));
@@ -720,7 +732,7 @@ class Renderer3D {
       d.position.set(b.x, b.z, b.y); d.rotation.set(0, -ang, 0);
       if (b.w === WEAPONS.rocket) d.scale.set(1.3, 0.35, 0.35);
       else if (b.w === WEAPONS.cannon) d.scale.set(0.8, 0.8, 0.8);
-      else d.scale.set(1.8, 0.16, 0.16);
+      else d.scale.set(2.6, 0.26, 0.26);
       d.updateMatrix();
       bm.setMatrixAt(bi, d.matrix);
       bm.setColorAt(bi, R3.col(b.w === WEAPONS.rocket ? '#ff6a2a' : b.w === WEAPONS.cannon ? '#ffb347' : b.w.color));

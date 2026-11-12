@@ -27,14 +27,14 @@
         <button class="btn big primary" data-go="setup">▶ SPIELEN (gegen Bots)</button>
         <button class="btn big online" data-go="online">🌐 ONLINE MIT FREUNDEN</button>
         <button class="btn big" data-go="garage">🔧 GARAGE</button>
-        <button class="btn big" data-go="drivers">🧑‍✈️ FAHRER</button>
+        <button class="btn big" data-go="drivers">🖼️ PROFILBILD</button>
         <button class="btn big" data-go="help">🎮 STEUERUNG</button>
       </div>
       <div class="menu-foot">
         <label class="chk"><input type="checkbox" id="opt-sound" checked> Sound</label>
         <label class="chk"><input type="checkbox" id="opt-aim"> Zielhilfe</label>
         <label class="chk"><input type="checkbox" id="opt-3d" checked> 3D-Grafik</label>
-        <span class="credits">Karten: © OpenStreetMap-Mitwirkende (ODbL)</span>
+        <span class="credits">Karten: © OpenStreetMap-Mitwirkende (ODbL) · <a href="admin.html" style="color:inherit">Admin</a></span>
       </div>
     </div>
   </section>
@@ -43,6 +43,8 @@
   <section id="scr-setup" class="screen hidden">
     <div class="panel">
       <header><button class="btn back" data-go="menu">←</button><h2>Match einrichten</h2></header>
+      <h3>Fahrzeugklasse</h3>
+      <div class="loadout" id="loadout"></div>
       <h3>Stadt wählen</h3>
       <div class="maps" id="maps"></div>
       <div class="opts">
@@ -98,9 +100,12 @@
           <h3>Einstellungen <span id="lobby-hostnote" class="hint"></span></h3>
           <div class="opt"><span>Stadt</span><div class="seg" id="lseg-map"></div></div>
           <div class="opt"><span>Teamgröße (Rest = Bots)</span><div class="seg" id="lseg-size"></div></div>
-          <div class="opt"><span>Bots</span><div class="seg" id="lseg-diff"></div></div>
+          <div class="opt"><span>KI-Bots</span><div class="seg" id="lseg-bots"></div></div>
+          <div class="opt"><span>Bot-Stärke</span><div class="seg" id="lseg-diff"></div></div>
           <div class="opt"><span>Punkte zum Sieg</span><div class="seg" id="lseg-caps"></div></div>
           <div class="opt"><span>Zeitlimit</span><div class="seg" id="lseg-time"></div></div>
+          <h3>Dein Fahrzeug</h3>
+          <div class="loadout small" id="lobby-loadout"></div>
           <button class="btn big primary" id="btn-lobby-start">🏁 MATCH STARTEN</button>
           <div class="hint" id="lobby-wait"></div>
         </div>
@@ -135,8 +140,8 @@
   <!-- Fahrer -->
   <section id="scr-drivers" class="screen hidden">
     <div class="panel wide">
-      <header><button class="btn back" data-go="menu">←</button><h2>Wähle deinen Fahrer</h2></header>
-      <p class="hint">Die Crew aus dem Ordner „Fette Bilder“. Alle anderen fahren als Mitspieler oder Gegner mit.</p>
+      <header><button class="btn back" data-go="menu">←</button><h2>Profilbild wählen</h2></header>
+      <p class="hint">Dein Bild im Spiel. Deinen Namen trägst du im Hauptmenü ein. Welche Bilder hier erscheinen, legt der Admin fest.</p>
       <div class="drivers" id="drivers"></div>
     </div>
   </section>
@@ -156,9 +161,11 @@
             <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / Pfeile</td><td>Fahren & Lenken</td></tr>
             <tr><td>Maus</td><td>Zielen</td></tr>
             <tr><td>Linke Maustaste / <kbd>F</kbd></td><td>Schießen</td></tr>
-            <tr><td><kbd>Leertaste</kbd></td><td>Springen</td></tr>
-            <tr><td><kbd>Shift</kbd></td><td>Turbo</td></tr>
+            <tr><td><kbd>Leertaste</kbd></td><td>Springen (auch im Stand)</td></tr>
+            <tr><td><kbd>Shift</kbd></td><td>Nitro – in der Luft: gleiten / fliegen</td></tr>
+            <tr><td><kbd>Q</kbd> + Lenken</td><td>Driften (Handbremse)</td></tr>
             <tr><td><kbd>E</kbd> / Rechtsklick</td><td>Mine legen</td></tr>
+            <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>Upgrade im Match: Tempo / Panzerung / Waffe</td></tr>
             <tr><td><kbd>Tab</kbd></td><td>Punktetafel</td></tr>
             <tr><td>Mausrad</td><td>Zoom</td></tr>
             <tr><td><kbd>C</kbd></td><td>Kamera: Drohne / von oben</td></tr>
@@ -175,7 +182,7 @@
         </div>
         <div class="help-box">
           <h3>💡 Tipps</h3>
-          <p>Gelbe Rampen schleudern dich durch die Luft – in der Luft fliegen Kugeln unter dir durch und du kannst Gegner plattmachen. Holzkisten und Strohballen kannst du rammen. Im Bodensee geht dein Auto unter! Mit Kohle aus Matches kaufst du neue Autos und Upgrades.</p>
+          <p>Für Abschüsse, Flaggen und Rettungen gibt es XP – alle 200 XP darfst du im laufenden Match ein Upgrade wählen. Gelbe Rampen schleudern dich durch die Luft – in der Luft fliegen Kugeln unter dir durch und du kannst Gegner plattmachen. Holzkisten und Strohballen kannst du rammen. Im Bodensee geht dein Auto unter! Mit Kohle aus Matches kaufst du neue Autos und Upgrades.</p>
         </div>
       </div>
     </div>

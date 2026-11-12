@@ -6,11 +6,12 @@
 const SAVE_KEY = 'schussental_showdown_v1';
 const DEFAULT_SAVE = {
   coins: 500,
-  owned: { flitzer: true, bock: true },
+  owned: {},
+  name: '',
   up: {},
   car: 'flitzer',
   driver: 'marlon',
-  settings: { sound: true, autoAim: false, gfx3d: true, cam: 'chase', size: 4, diff: 1, caps: 3, time: 480, map: 'ravensburg' },
+  settings: { sound: true, autoAim: false, gfx3d: true, cam: 'chase', size: 4, diff: 1, caps: 3, time: 480, map: 'ravensburg', bots: true },
   stats: { games: 0, wins: 0, kills: 0, caps: 0 },
 };
 let save = loadSave();
@@ -23,6 +24,16 @@ function loadSave() {
   } catch (e) { /* ignorieren */ }
   return JSON.parse(JSON.stringify(DEFAULT_SAVE));
 }
+// alle Fahrzeugklassen sind frei wählbar
+for (const c of CARS) save.owned[c.id] = true;
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const cleanName = s => String(s || '').replace(/[<>"'`\\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 16);
+function avatarHtml(id, name, cls = '') {
+  const d = DRIVERS.find(x => x.id === id);
+  if (d && !ADMIN_ASSETS.inactive.has(d.id)) return `<img class="${cls}" src="${esc(driverSrc(d))}" alt="">`;
+  return `<div class="ava ${cls}">${esc((cleanName(name) || '?')[0].toUpperCase())}</div>`;
+}
+function myName() { return cleanName(save.name) || 'Spieler'; }
 function writeSave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { /* privater Modus */ } }
 
 const $ = s => document.querySelector(s);
@@ -52,15 +63,19 @@ function startDemo() {
   if (demo || game) return;
   Sound.quiet = true;
   const map = pick(MAPS).id;
-  demo = new Game(canvas, { demo: true, three: save.settings.gfx3d !== false, mapId: map, teamSize: 4, difficulty: 1, capLimit: 3, timeLimit: 300, car: pick(CARS).id, driver: pick(DRIVERS).id, upgrades: {} });
+  const act = activeDrivers();
+  demo = new Game(canvas, { demo: true, three: save.settings.gfx3d !== false, mapId: map, teamSize: 4, difficulty: 1, capLimit: 3, timeLimit: 300, car: pick(CARS).id, driver: act.length ? pick(act).id : '', upgrades: {} });
   demo.onEnd = () => { stopDemo(); if (!game) startDemo(); };
 }
 function stopDemo() { if (demo) { demo.destroy(); demo = null; } Sound.quiet = false; }
 
 // ---------------- Hauptmenü ----------------
 function renderMenu() {
-  const d = driverById(save.driver), car = CARS.find(c => c.id === save.car);
-  $('#me-card').innerHTML = `<img src="img/fahrer/${d.id}.jpg" alt=""><div><div class="nm">${d.name}</div><div class="sub">${car.name} · ${save.stats.wins} Siege · ${save.stats.kills} Abschüsse</div></div><div class="coins">💰 ${fmt(save.coins)}</div>`;
+  const car = CARS.find(c => c.id === save.car) || CARS[0];
+  $('#me-card').innerHTML = `${avatarHtml(save.driver, myName())}<div class="me-mid"><input id="nick" maxlength="16" placeholder="Dein Name" value="${esc(save.name)}" autocomplete="off" spellcheck="false"><div class="sub">${esc(car.name)} · ${save.stats.wins} Siege · ${save.stats.kills} Abschüsse</div></div><div class="coins">💰 ${fmt(save.coins)}</div>`;
+  const nick = $('#nick');
+  nick.addEventListener('keydown', e => e.stopPropagation());
+  nick.addEventListener('input', () => { save.name = cleanName(nick.value); writeSave(); });
   $('#opt-sound').checked = save.settings.sound;
   $('#opt-aim').checked = save.settings.autoAim;
   $('#opt-3d').checked = save.settings.gfx3d !== false;
@@ -110,8 +125,24 @@ function renderSetup() {
   seg($('#seg-diff'), [[0, 'Leicht'], [1, 'Mittel'], [2, 'Schwer']], S.diff, v => S.diff = v);
   seg($('#seg-caps'), [[3, '3'], [5, '5'], [7, '7']], S.caps, v => S.caps = v);
   seg($('#seg-time'), [[300, '5 Min'], [480, '8 Min'], [720, '12 Min']], S.time, v => S.time = v);
-  const d = driverById(save.driver), car = CARS.find(c => c.id === save.car);
-  $('#setup-car').innerHTML = `<img src="img/fahrer/${d.id}.jpg" alt=""><div><b>${d.name}</b><br>im ${car.name}</div>`;
+  $('#setup-car').innerHTML = `${avatarHtml(save.driver, myName())}<div><b>${esc(myName())}</b><br>im ${esc((CARS.find(c => c.id === save.car) || CARS[0]).name)}</div>`;
+  renderLoadout($('#loadout'), save.car, id => { save.car = id; writeSave(); Sound.play('click'); renderSetup(); });
+}
+// Fahrzeugklassen-Auswahl vor dem Match
+function renderLoadout(el, sel, onPick) {
+  if (!el) return;
+  el.innerHTML = '';
+  const bars = [['speed', 'Tempo', 42], ['hp', 'Schutz', 520], ['dps', 'Feuerkraft', 80], ['jump', 'Sprung', 13]];
+  for (const car of CARS) {
+    const st = carStats(car, save.up[car.id] || {});
+    const val = k => k === 'dps' ? carDps(car, st) : st[k];
+    const d = document.createElement('div');
+    d.className = 'lo-card' + (car.id === sel ? ' sel' : '');
+    d.innerHTML = `<div class="lo-n">${esc(car.name)}</div><div class="lo-r">${esc(car.role)} · ${esc(WEAPONS[car.weapon].name)}</div>` +
+      bars.map(([k, n, mx]) => `<div class="lo-b"><span>${n}</span><i><b style="width:${Math.round(clamp(val(k) / mx, 0.05, 1) * 100)}%"></b></i></div>`).join('');
+    d.onclick = () => onPick(car.id);
+    el.appendChild(d);
+  }
 }
 function startMatch(opts) {
   stopDemo();
@@ -131,7 +162,7 @@ function matchOpts() {
   return {
     mapId: S.map, teamSize: S.size, difficulty: S.diff, capLimit: S.caps, timeLimit: S.time,
     three: save.settings.gfx3d !== false, camMode: save.settings.cam || 'chase',
-    car: save.car, driver: save.driver, upgrades: save.up[save.car] || {}, autoAim: S.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0),
+    car: save.car, driver: save.driver, name: myName(), upgrades: save.up[save.car] || {}, autoAim: S.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0),
   };
 }
 function endMatch(res) {
@@ -242,10 +273,15 @@ function renderGarage() {
 // ---------------- Fahrer ----------------
 function renderDrivers() {
   const wrap = $('#drivers'); wrap.innerHTML = '';
-  for (const d of DRIVERS) {
+  const none = document.createElement('div');
+  none.className = 'drv' + (!activeDrivers().some(d => d.id === save.driver) ? ' sel' : '');
+  none.innerHTML = `${avatarHtml('', myName())}<div class="dn">Kein Foto</div>`;
+  none.onclick = () => { save.driver = ''; writeSave(); Sound.play('click'); renderDrivers(); };
+  wrap.appendChild(none);
+  for (const d of activeDrivers()) {
     const el = document.createElement('div');
     el.className = 'drv' + (save.driver === d.id ? ' sel' : '');
-    el.innerHTML = `<img src="img/fahrer/${d.id}.jpg" alt="${d.name}"><div class="dn">${d.name}</div>`;
+    el.innerHTML = `<img src="${esc(driverSrc(d))}" alt=""><div class="dn">${esc(d.name)}</div>`;
     el.onclick = () => { save.driver = d.id; writeSave(); Sound.init(); Sound.play('click'); renderDrivers(); };
     wrap.appendChild(el);
   }
@@ -290,9 +326,11 @@ Input.init(canvas);
 Input.onKey = code => {
   if (code === 'Escape' || code === 'KeyP') togglePause();
   if (code === 'KeyC' && game && game.r3d && !game.demo) { save.settings.cam = game.toggleCam(); writeSave(); }
+  if (game && !game.demo && /^Digit[123]$/.test(code)) game.requestUp(MATCH_UPS[+code.slice(5) - 1].k);
   if (code === 'KeyM') { save.settings.sound = !save.settings.sound; Sound.setMuted(!save.settings.sound); writeSave(); toast(save.settings.sound ? 'Sound an' : 'Sound aus'); }
 };
 Input.onWheel = dir => { if (game) game.zoom(dir); };
+Input.onTouchUi = (x, y) => !!(game && !game.demo && game.tapUp(x, y));
 document.addEventListener('visibilitychange', () => { if (document.hidden && game && game.mode === 'local' && !game.paused && game.state !== 'over') togglePause(true); });
 
 // ---------------- Online ----------------
@@ -307,9 +345,11 @@ const SEGS = {
   diff: () => [[0, 'Leicht'], [1, 'Mittel'], [2, 'Schwer']],
   caps: () => [[3, '3'], [5, '5'], [7, '7']],
   time: () => [[300, '5 Min'], [480, '8 Min'], [720, '12 Min']],
+  bots: () => [[true, 'Bots an'], [false, 'Bots aus']],
 };
 function renderLobby() {
   if (!Net.active) return;
+  renderLobbyCar();
   const isHost = Net.role === 'host';
   $('#lobby-code').textContent = Net.code || '…';
   const S = Net.settings || {};
@@ -320,18 +360,18 @@ function renderLobby() {
   $('#btn-lobby-start').classList.toggle('hidden', !isHost);
   const humans = Net.players.length;
   $('#lobby-wait').textContent = isHost
-    ? `${humans} Spieler im Raum. Freie Plätze werden mit Bots aufgefüllt. Teile den Link oder Code mit deinen Freunden!`
+    ? `${humans} Spieler im Raum. ${S.bots === false ? 'Ohne Bots – nur echte Spieler.' : 'Freie Plätze werden mit Bots aufgefüllt.'} Teile den Link oder Code mit deinen Freunden!`
     : 'Warte, bis der Host das Match startet …';
   for (let t = 0; t < 2; t++) {
     const el = $('#team-' + t); el.innerHTML = '';
     const list = Net.players.filter(p => p.team === t);
     for (const p of list) {
-      const d = driverById(p.driver), car = CARS.find(c => c.id === p.car) || CARS[0];
+      const car = CARS.find(c => c.id === p.car) || CARS[0];
       const mine = p.pid === Net.myId;
       const row = document.createElement('div');
       row.className = 'pl' + (mine ? ' me' : '');
       const link = p.pid === 'host' ? '👑 Host' : p.link === 'rtc' ? '🟢 direkt verbunden' : p.link === 'relay' ? '🟡 über Server' : '⏳ verbindet …';
-      row.innerHTML = `<img src="img/fahrer/${d.id}.jpg" alt=""><div><div class="pn">${d.name}${mine ? ' (Du)' : ''}</div><div class="pc">${car.name} · ${link}</div></div>`;
+      row.innerHTML = `${avatarHtml(p.driver, p.name)}<div><div class="pn">${esc(p.name || 'Spieler')}${mine ? ' (Du)' : ''}</div><div class="pc">${esc(car.name)} · ${link}</div></div>`;
       if (mine || isHost) {
         const b = document.createElement('button'); b.className = 'btn'; b.textContent = t ? '← Rot' : 'Blau →';
         b.onclick = () => { Sound.play('click'); Net.setTeam(p.pid, t ? 0 : 1); };
@@ -339,13 +379,18 @@ function renderLobby() {
       }
       el.appendChild(row);
     }
-    const size = S.size || 4;
+    const size = S.bots === false ? 0 : (S.size || 4);
     for (let i = list.length; i < size; i++) {
       el.insertAdjacentHTML('beforeend', `<div class="pl bot"><div style="width:36px;height:36px;border-radius:50%;background:#333a48;display:grid;place-items:center">🤖</div><div><div class="pn">Bot</div><div class="pc">füllt auf</div></div></div>`);
     }
   }
 }
 Net.onLobby = () => { if (!$('#scr-lobby').classList.contains('hidden')) renderLobby(); };
+// eigenes Fahrzeug in der Lobby wählen
+function renderLobbyCar() {
+  const me = Net.players.find(p => p.pid === Net.myId);
+  renderLoadout($('#lobby-loadout'), me ? me.car : save.car, id => { save.car = id; writeSave(); Sound.play('click'); Net.setCar(id); });
+}
 Net.onError = msg => {
   if (game && game.mode !== 'local') { game.destroy(); game = null; $('#scr-end').classList.add('hidden'); $('#scr-pause').classList.add('hidden'); }
   show('online');
@@ -368,12 +413,20 @@ Net.onToLobby = () => {
   show('lobby');
 };
 $('#btn-host').onclick = () => {
-  if (!Net.available()) return;
+  if (!Net.available() || needName()) return;
   Sound.init(); netStatus('Erstelle Raum …');
   stopDemo();
   Net.host(() => { netStatus(''); show('lobby'); });
 };
+function needName() {
+  if (cleanName(save.name)) return false;
+  netStatus('Bitte gib zuerst im Hauptmenü deinen Namen ein.', true);
+  const n = prompt('Wie heißt du? (Name für das Spiel)', '');
+  if (n && cleanName(n)) { save.name = cleanName(n); writeSave(); return false; }
+  return true;
+}
 function doJoin() {
+  if (needName()) return;
   const code = $('#join-code').value.trim().toUpperCase();
   if (code.length < 5) { netStatus('Bitte den 5-stelligen Code eingeben.', true); return; }
   if (!Net.available()) return;
@@ -406,7 +459,7 @@ show = function (id) {
 };
 
 Sound.setMuted(!save.settings.sound);
-loadDriverImages(() => {
+loadAdminAssets().finally(() => loadDriverImages(() => {
   $('#loading').remove();
   const code = new URLSearchParams(location.search).get('raum');
   if (code) {
@@ -415,4 +468,4 @@ loadDriverImages(() => {
     history.replaceState(null, '', location.pathname);
     doJoin();
   } else show('menu');
-});
+}));

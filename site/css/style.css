@@ -175,3 +175,23 @@ kbd { display: inline-block; background: #333a48; border: 1px solid #4a5263; bor
 .lobby-side { display: flex; flex-direction: column; gap: 8px; }
 .lobby-side .seg button:disabled { cursor: default; }
 @media (max-width: 760px) { .lobby { grid-template-columns: 1fr; } .teams { grid-template-columns: 1fr; } .room-code b { font-size: 20px; } }
+
+/* Name, Avatare ohne Foto */
+.me-mid { flex: 1; min-width: 0; }
+#nick { width: 100%; font: inherit; font-weight: 800; font-size: 16px; color: var(--text); background: #0f1116; border: 2px solid #3a4152; border-radius: 8px; padding: 4px 8px; }
+#nick:focus { outline: none; border-color: var(--accent); }
+.ava { width: 52px; height: 52px; border-radius: 50%; background: #3a4152; color: #fff; display: grid; place-items: center; font-weight: 900; font-size: 22px; border: 3px solid var(--red); flex: none; }
+.pl .ava { width: 36px; height: 36px; font-size: 15px; border-width: 2px; }
+#setup-car .ava { width: 40px; height: 40px; font-size: 17px; border-width: 2px; }
+.drv .ava { width: 92px; height: 92px; margin: 0 auto; font-size: 38px; border-color: #333a48; }
+/* Fahrzeugklassen */
+.loadout { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.loadout.small { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.lo-card { background: #1b1e26; border: 2px solid var(--line); border-radius: 12px; padding: 8px 10px; cursor: pointer; transition: transform 0.1s; }
+.lo-card:hover { transform: translateY(-2px); }
+.lo-card.sel { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255, 207, 63, 0.25); }
+.lo-n { font-weight: 800; font-size: 13px; }
+.lo-r { font-size: 11px; color: var(--accent); margin-bottom: 4px; }
+.lo-b { display: grid; grid-template-columns: 58px 1fr; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
+.lo-b i { height: 5px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden; }
+.lo-b b { display: block; height: 100%; background: linear-gradient(90deg, #f0a91d, #ffd651); }

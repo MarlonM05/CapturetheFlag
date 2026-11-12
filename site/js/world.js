@@ -170,7 +170,8 @@ class World {
           if (!hit || (r - d) > hit.pen) hit = { nx, ny, pen: r - d, kind: 'b' };
         }
       }
-      for (const t of this.hTrees[ci]) {
+      // Bäume sind nur Deko (keine Kollision mehr)
+      if (false) for (const t of this.hTrees[ci]) {
         if (t.h <= z || seen.has(t)) continue;
         seen.add(t);
         const tr = 0.6;
@@ -196,10 +197,6 @@ class World {
     if (x < 0 || y < 0 || x > this.w || y > this.h) return true;
     const b = this.buildingAt(x, y);
     if (b && b.h > z) return true;
-    const c = this.cell(x, y);
-    if (c >= 0) for (const t of this.hTrees[c]) {
-      if (z < 3.5 && (x - t.x) ** 2 + (y - t.y) ** 2 < 0.5) return true;
-    }
     return false;
   }
 
@@ -220,7 +217,6 @@ class World {
         for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
         g.closePath(); g.fill(); if (inflate > 0) g.stroke();
       }
-      for (const t of this.trees) { g.beginPath(); g.arc(t.x, t.y, 0.6 + inflate, 0, 7); g.fill(); }
       for (const c of this.map.crates) if (c.t === 2) {
         g.save(); g.translate(c.x, c.y); g.rotate(c.a); g.fillRect(-1.6 - inflate, -0.5 - inflate, 3.2 + inflate * 2, 1 + inflate * 2); g.restore();
       }

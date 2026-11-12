@@ -29,59 +29,69 @@ const WEAPONS = {
   shotgun: { name: 'Schrotflinte', speed: 95, life: 0.3, spread: 0.24, count: 7, splash: 0, size: 0.3, color: '#fff1b0', sound: 'shotgun' },
 };
 
-// Fahrzeuge. base = Stufe 0, per = Zuwachs pro Upgrade-Stufe
+// Fahrzeugklassen (alle frei wählbar). base = Stufe 0, per = Zuwachs pro Garagen-Upgrade
 const CARS = [
   {
-    id: 'flitzer', name: 'Schussen-Flitzer', role: 'Schnell', price: 0, shape: 'sport', weapon: 'mg',
-    desc: 'Der schnellste Wagen im Schussental. Perfekt zum Flaggenklauen – hält aber kaum etwas aus.',
-    len: 4.4, wid: 2.0, radius: 1.55, mass: 1.0,
-    base: { speed: 34, accel: 25, turn: 3.4, hp: 85, dmg: 7, rate: 7, boost: 2.6, jump: 9 },
-    per: { speed: 1.5, accel: 1.4, hp: 10, dmg: 1.0, rate: 0.7, boost: 0.3, jump: 0.6 },
+    id: 'flitzer', name: 'Schussen-Flitzer', role: 'Ausgewogen', price: 0, shape: 'sport', weapon: 'mg',
+    desc: 'Der Allrounder: ordentliches Tempo, solide Panzerung, präzises Doppel-MG.',
+    len: 4.4, wid: 2.0, radius: 1.55, mass: 1.1,
+    base: { speed: 31, accel: 23, turn: 3.2, hp: 115, dmg: 7.5, rate: 6.5, boost: 2.2, jump: 9 },
+    per: { speed: 1.3, accel: 1.3, hp: 12, dmg: 1.0, rate: 0.6, boost: 0.3, jump: 0.6 },
   },
   {
-    id: 'hornisse', name: 'Hornisse', role: 'Schnelles Feuer', price: 1200, shape: 'buggy', weapon: 'minigun',
-    desc: 'Offener Buggy mit Minigun. Spuckt Kugeln wie ein Rasensprenger.',
-    len: 3.9, wid: 2.3, radius: 1.55, mass: 1.1,
-    base: { speed: 30, accel: 22, turn: 3.3, hp: 105, dmg: 3.3, rate: 17, boost: 2.0, jump: 8.5 },
-    per: { speed: 1.2, accel: 1.2, hp: 12, dmg: 0.45, rate: 1.6, boost: 0.25, jump: 0.6 },
+    id: 'hornisse', name: 'Hornisse', role: 'Schneller Buggy', price: 0, shape: 'buggy', weapon: 'minigun',
+    desc: 'Leichter Buggy: das schnellste Fahrzeug, dünnes Blech, Minigun mit Dauerfeuer. Ideal zum Flaggenklauen.',
+    len: 3.9, wid: 2.3, radius: 1.55, mass: 0.95,
+    base: { speed: 35, accel: 27, turn: 3.4, hp: 78, dmg: 3.0, rate: 16, boost: 2.4, jump: 9 },
+    per: { speed: 1.3, accel: 1.3, hp: 9, dmg: 0.4, rate: 1.4, boost: 0.3, jump: 0.6 },
   },
   {
-    id: 'panzer', name: 'Mehlsack-Panzer', role: 'Guter Schutz', price: 2500, shape: 'tank', weapon: 'cannon',
-    desc: 'Schwer wie der Mehlsack-Turm. Langsam, aber die Kanone haut alles weg.',
+    id: 'panzer', name: 'Mehlsack-Panzer', role: 'Schwerer Truck', price: 0, shape: 'tank', weapon: 'cannon',
+    desc: 'Langsam und schwer gepanzert. Die Kanone braucht Nachladezeit, haut aber alles weg.',
     len: 5.2, wid: 2.9, radius: 2.0, mass: 2.6,
-    base: { speed: 21, accel: 13, turn: 2.3, hp: 280, dmg: 38, rate: 1.0, boost: 1.6, jump: 7 },
-    per: { speed: 1.0, accel: 0.9, hp: 30, dmg: 4, rate: 0.1, boost: 0.2, jump: 0.5 },
+    base: { speed: 23, accel: 14, turn: 2.4, hp: 250, dmg: 42, rate: 0.85, boost: 1.8, jump: 7.5 },
+    per: { speed: 1.0, accel: 0.9, hp: 26, dmg: 4, rate: 0.08, boost: 0.2, jump: 0.5 },
   },
   {
-    id: 'rudi', name: 'Raketen-Rudi', role: 'Explosiv', price: 3200, shape: 'jeep', weapon: 'rocket',
-    desc: 'Pickup mit Zielsuch-Raketen. Flächenschaden für Kreuzungs-Chaos.',
+    id: 'rudi', name: 'Raketen-Rudi', role: 'Explosiv', price: 0, shape: 'jeep', weapon: 'rocket',
+    desc: 'Pickup mit Zielsuch-Raketen und Flächenschaden. Stark gegen Gruppen, schwach im Nahkampf.',
     len: 4.7, wid: 2.3, radius: 1.75, mass: 1.4,
-    base: { speed: 27, accel: 18, turn: 2.8, hp: 140, dmg: 26, rate: 1.5, boost: 2.0, jump: 8 },
-    per: { speed: 1.2, accel: 1.1, hp: 16, dmg: 3, rate: 0.15, boost: 0.25, jump: 0.6 },
+    base: { speed: 28, accel: 19, turn: 2.9, hp: 140, dmg: 28, rate: 1.4, boost: 2.0, jump: 8.5 },
+    per: { speed: 1.2, accel: 1.1, hp: 15, dmg: 3, rate: 0.12, boost: 0.25, jump: 0.6 },
   },
   {
     id: 'bock', name: 'Allgäu-Bock', role: 'Springer', price: 0, shape: 'truck', weapon: 'shotgun',
-    desc: 'Geländewagen mit Monster-Federung und Schrotflinte. Springt über alles.',
+    desc: 'Geländewagen mit Monster-Federung: springt am höchsten, Schrotflinte für den Nahkampf.',
     len: 4.8, wid: 2.4, radius: 1.8, mass: 1.6,
-    base: { speed: 28, accel: 20, turn: 3.0, hp: 160, dmg: 5.2, rate: 1.6, boost: 2.2, jump: 11.5 },
-    per: { speed: 1.2, accel: 1.2, hp: 18, dmg: 0.6, rate: 0.16, boost: 0.25, jump: 0.8 },
+    base: { speed: 29, accel: 21, turn: 3.0, hp: 165, dmg: 5.5, rate: 1.6, boost: 2.4, jump: 11.5 },
+    per: { speed: 1.2, accel: 1.2, hp: 17, dmg: 0.6, rate: 0.15, boost: 0.25, jump: 0.8 },
   },
 ];
 
+// Upgrades während des Matches (mit XP freigeschaltet, gelten nur für die Runde)
+const MATCH_UPS = [
+  { k: 'spd', name: 'Tempo', icon: '⚡', key: '1', desc: '+7 % Tempo & Beschleunigung' },
+  { k: 'arm', name: 'Panzerung', icon: '🛡️', key: '2', desc: '+15 % Lebenspunkte' },
+  { k: 'dmg', name: 'Waffe', icon: '💥', key: '3', desc: '+12 % Schaden' },
+];
+const MATCH_UP_MAX = 3;
+const XP = { kill: 100, assist: 40, pickup: 50, capture: 300, ret: 60, perLevel: 200 };
+
 // Upgrade-Stufen -> konkrete Werte
-function carStats(car, lv) {
-  lv = lv || {};
+function carStats(car, lv, ups) {
+  lv = lv || {}; ups = ups || {};
+  const us = 1 + 0.07 * (ups.spd || 0), ua = 1 + 0.15 * (ups.arm || 0), ud = 1 + 0.12 * (ups.dmg || 0);
   const b = car.base, p = car.per;
   const m = lv.motor || 0, a = lv.panzer || 0, w = lv.waffe || 0, f = lv.feuer || 0, t = lv.turbo || 0, s = lv.sprung || 0;
   return {
-    speed: b.speed + p.speed * m,
-    accel: b.accel + p.accel * m,
+    speed: (b.speed + p.speed * m) * us,
+    accel: (b.accel + p.accel * m) * us,
     turn: b.turn + 0.04 * m,
-    hp: Math.round((b.hp + p.hp * a) * 1.7),
-    dmg: b.dmg + p.dmg * w,
+    hp: Math.round((b.hp + p.hp * a) * 1.7 * ua),
+    dmg: (b.dmg + p.dmg * w) * ud,
     rate: b.rate + p.rate * f,
-    boost: b.boost + p.boost * t,
-    boostRegen: 0.22 + 0.04 * t,
+    boost: (b.boost + p.boost * t) * 1.5,
+    boostRegen: 0.32 + 0.05 * t,
     jump: b.jump + p.jump * s,
     jumpCd: Math.max(0.9, 2.2 - 0.25 * s),
   };
@@ -93,7 +103,7 @@ const STAT_BARS = [
   { k: 'hp', name: 'Schutz', max: 740 },
   { k: 'dps', name: 'Feuerkraft', max: 90 },
   { k: 'rate', name: 'Feuerrate', max: 26 },
-  { k: 'boost', name: 'Turbo', max: 4.2 },
+  { k: 'boost', name: 'Nitro', max: 6.5 },
   { k: 'jump', name: 'Sprung', max: 16 },
 ];
 function carDps(car, st) {
@@ -118,17 +128,43 @@ const DRIVERS = [
   { id: 'quarktin', name: 'Quarktin Skittles' },
   { id: 'kalorientin', name: 'Kalorientin Weixler' },
 ];
+// Welche Bilder aktiv sind, legt der Admin fest (Supabase-Tabelle ctf_images, siehe admin.html).
+// Ohne Verbindung sind alle eingebauten Bilder aktiv.
 const DRIVER_IMG = {};
+const ADMIN_ASSETS = { loaded: false, inactive: new Set() };
+function driverSrc(d) { return d.url || ('img/fahrer/' + d.id + '.jpg'); }
+function activeDrivers() { return DRIVERS.filter(d => !ADMIN_ASSETS.inactive.has(d.id)); }
 function loadDriverImages(done) {
   let left = DRIVERS.length;
+  if (!left && done) done();
   for (const d of DRIVERS) {
     const im = new Image();
+    if (d.url) im.crossOrigin = 'anonymous';
     im.onload = im.onerror = () => { if (--left === 0 && done) done(); };
-    im.src = 'img/fahrer/' + d.id + '.jpg';
+    im.src = driverSrc(d);
     DRIVER_IMG[d.id] = im;
   }
 }
-function driverById(id) { return DRIVERS.find(d => d.id === id) || DRIVERS[0]; }
+function driverById(id) { return DRIVERS.find(d => d.id === id) || { id: '', name: 'Bot' }; }
+// Liste vom Server holen (öffentlich lesbar, schreiben nur über die Admin-Funktion)
+async function loadAdminAssets() {
+  try {
+    if (!window.supabase || typeof SUPA_URL === 'undefined') return;
+    const sb = window.supabase.createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+    const res = await Promise.race([sb.from('ctf_images').select('id,name,file,bundled,active'), new Promise(r => setTimeout(() => r({ error: 'timeout' }), 5000))]);
+    if (res.error || !Array.isArray(res.data)) return;
+    for (const row of res.data) {
+      if (!row.active) ADMIN_ASSETS.inactive.add(row.id);
+      if (!row.bundled && row.file && !DRIVERS.some(d => d.id === row.id)) {
+        DRIVERS.push({ id: row.id, name: row.name, url: SUPA_URL + '/storage/v1/object/public/ctf-images/' + row.file });
+      } else {
+        const d = DRIVERS.find(x => x.id === row.id);
+        if (d && row.name) d.name = row.name;
+      }
+    }
+    ADMIN_ASSETS.loaded = true;
+  } catch (e) { /* offline: alles bleibt aktiv */ }
+}
 
 // Belohnungen (Kohle)
 const REWARD = { kill: 100, assist: 40, pickup: 50, capture: 400, ret: 75, win: 600, lose: 200, draw: 350 };

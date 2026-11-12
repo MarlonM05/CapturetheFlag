@@ -31,10 +31,29 @@ Hinweise:
 - Supabase-Gratisprojekte werden nach einer Woche ohne Nutzung pausiert → im Supabase-Dashboard „Restore“ klicken.
 - Gratis-Limit: 2 Mio. Realtime-Nachrichten/Monat. Direkte Verbindungen verbrauchen davon fast nichts.
 
+## Spielmechanik (Motor-Wars-Stil)
+- **Fahrzeugklassen** (vor jedem Match frei wählbar, auch in der Online-Lobby):
+  Schussen-Flitzer (ausgewogen, Doppel-MG) · Hornisse (schneller Buggy, Minigun, wenig Panzerung) ·
+  Mehlsack-Panzer (schwerer Truck, Kanone mit Nachladezeit) · Raketen-Rudi (Zielsuch-Raketen) · Allgäu-Bock (Springer, Schrotflinte).
+- **Drift:** `Q` + Lenken – Heck bricht aus, engere Kurven bei vollem Tempo.
+- **Sprung + Nitro:** `Leertaste` springt auch im Stand; `Shift` in der Luft gibt Schub und Auftrieb → gleiten/fliegen, solange das Nitro reicht.
+- **XP im Match:** Abschuss 100, Assist 40, Flagge klauen 50, Rettung 60, Punkt 300. Alle 200 XP ein Upgrade für die laufende Runde:
+  `1` Tempo (+7 %), `2` Panzerung (+15 %), `3` Waffe (+12 %), je max. 3 Stufen. Bots leveln mit.
+- **Karten:** 25 % größer, Häuserblöcke nach innen verkleinert → breitere Straßen; Bäume sind nur Deko; Rampen nur mit freier Anlauf- und Landebahn.
+- Wandkontakt kostet kaum noch Panzerung (nur harte Frontalcrashs).
+
+## Namen, Bots, Admin
+- Eigener **Name** im Hauptmenü (Pflicht für Online). Profilbild optional (Menü „Profilbild“).
+- In der Online-Lobby kann der Host **KI-Bots an/aus** schalten.
+- **Bilder-Admin:** `admin.html` (Link „Admin“ unten im Hauptmenü). Anmeldung mit demselben Owner-Passwort wie die
+  Giffig-/Make-It-Meme-Admin-Seite. Dort Profilbilder ein-/ausschalten, umbenennen, neue hochladen (werden auf 256×256 verkleinert)
+  oder hochgeladene löschen. Das Spiel zeigt nur aktive Bilder (auch bei Bots). Technik: Tabelle `ctf_images`,
+  Speicher `ctf-images` und Edge Function `ctf-admin` (Quelltext in `supabase/functions/ctf-admin/`) im Supabase-Projekt „giffig“.
+
 ## Grafik & Kamera
 - **3D** mit Three.js: Häuser aus OpenStreetMap mit Fassaden, Fenstern, Ziegel-, Sattel- und Walmdächern, Schatten,
   echte Straßen mit Asphalt, Mittelstreifen, Gehwegen, Bordsteinen und Laternen, 3D-Autos, Bäume, Rampen, Flaggen.
-- **Drohnen-Kamera** (Standard): knapp hinter und über dem Auto, folgt weich und steigt über Häuser im Weg.
+- **Drohnen-Kamera** (Standard, Turm zielt unabhängig mit der Maus; gelber Ring = aktuelle Turmrichtung): knapp hinter und über dem Auto, folgt weich und steigt über Häuser im Weg.
   Taste **C** (am Handy „KAMERA“) wechselt zur Ansicht von oben.
 - Für schwache Geräte: im Hauptmenü „3D-Grafik“ abschalten (klassische 2D-Ansicht).
 

@@ -113,7 +113,7 @@ const Net = {
   available() { return !!(window.supabase && window.supabase.createClient); },
   get active() { return !!this.role; },
   randomCode() { let s = ''; for (let i = 0; i < 5; i++) s += CODE_CHARS[(Math.random() * CODE_CHARS.length) | 0]; return s; },
-  meInfo(pid) { return { pid, driver: save.driver, car: save.car, upgrades: save.up[save.car] || {}, team: 0, link: 'host' }; },
+  meInfo(pid) { return { pid, name: myName(), driver: save.driver, car: save.car, upgrades: save.up[save.car] || {}, team: 0, link: 'host' }; },
   client() {
     if (!this.sb) this.sb = window.supabase.createClient(SUPA_URL, SUPA_KEY, {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
@@ -160,7 +160,7 @@ const Net = {
     if (this.role !== 'host') return;
     if (this.hostIn(pres)) { if (tries < 4) { this.host(onReady, tries + 1); return; } this.fail('Kein freier Raumcode gefunden.'); return; }
     const S = save.settings;
-    this.settings = { map: S.map, size: S.size, diff: S.diff, caps: S.caps, time: S.time };
+    this.settings = { map: S.map, size: S.size, diff: S.diff, caps: S.caps, time: S.time, bots: S.bots !== false };
     this.players = [this.meInfo('host')];
     this.startHeartbeat();
     this.lobbyChanged();
@@ -174,21 +174,21 @@ const Net = {
         if (this.inGame) { this.roomSend({ t: 'full', to: pid, reason: 'Das Match läuft gerade – versuch es nach der Runde nochmal.' }); return; }
         if (this.players.length >= MAX_HUMANS) { this.roomSend({ t: 'full', to: pid, reason: 'Der Raum ist voll (max. 12 Spieler).' }); return; }
         if (this.players.some(p => p.pid === pid)) { this.lobbyChanged(); return; }
-        let driver = DRIVERS.some(x => x.id === d.driver) ? d.driver : DRIVERS[0].id;
-        if (this.players.some(p => p.driver === driver)) {
-          const free = DRIVERS.find(x => !this.players.some(p => p.driver === x.id));
-          if (free) driver = free.id;
-        }
+        let driver = activeDrivers().some(x => x.id === d.driver) ? d.driver : '';
+        if (driver && this.players.some(p => p.driver === driver)) driver = '';
+        let name = cleanName(d.name) || 'Spieler';
+        while (this.players.some(p => p.name === name)) name = name.slice(0, 13) + ' ' + (2 + ((Math.random() * 8) | 0));
         const car = CARS.some(c => c.id === d.car) ? d.car : 'flitzer';
         const up = {};
         for (const u of UPGRADES) up[u.id] = clamp(Math.round(+((d.upgrades || {})[u.id]) || 0), 0, MAX_LVL);
         const red = this.players.filter(p => p.team === 0).length, blue = this.players.length - red;
-        this.players.push({ pid, driver, car, upgrades: up, team: red <= blue ? 0 : 1, link: 'pending' });
+        this.players.push({ pid, name, driver, car, upgrades: up, team: red <= blue ? 0 : 1, link: 'pending' });
         this.links.set(pid, new Link(this, pid, pid, true));
         this.lobbyChanged();
         break;
       }
       case 'team': { const p = this.players.find(q => q.pid === pid); if (p && !this.inGame) { p.team = d.team ? 1 : 0; this.lobbyChanged(); } break; }
+      case 'car': { const p = this.players.find(q => q.pid === pid); if (p && !this.inGame && CARS.some(c => c.id === d.car)) { p.car = d.car; const up = {}; for (const u of UPGRADES) up[u.id] = clamp(Math.round(+((d.upgrades || {})[u.id]) || 0), 0, MAX_LVL); p.upgrades = up; this.lobbyChanged(); } break; }
       case 'bye': this.dropPeer(pid); break;
     }
   },
@@ -203,6 +203,10 @@ const Net = {
   setTeam(pid, team) {
     if (this.role === 'host') { const p = this.players.find(q => q.pid === pid); if (p) { p.team = team; this.lobbyChanged(); } }
     else this.roomSend({ t: 'team', from: this.label, team });
+  },
+  setCar(car) {
+    if (this.role === 'host') { const p = this.players[0]; if (p) { p.car = car; p.upgrades = save.up[car] || {}; this.lobbyChanged(); } }
+    else this.roomSend({ t: 'car', from: this.label, car, upgrades: save.up[car] || {} });
   },
   setSetting(k, v) { if (this.role !== 'host') return; this.settings[k] = v; this.lobbyChanged(); },
   lobbyChanged() {
@@ -239,8 +243,8 @@ const Net = {
   },
   startMatch() {
     const S = this.settings;
-    const humans = this.players.map(p => ({ key: p.pid, driver: p.driver, car: p.car, upgrades: p.upgrades, team: p.team, human: true }));
-    const opts = { mapId: S.map, teamSize: S.size, difficulty: S.diff, capLimit: S.caps, timeLimit: S.time };
+    const humans = this.players.map(p => ({ key: p.pid, name: p.name, driver: p.driver, car: p.car, upgrades: p.upgrades, team: p.team, human: true }));
+    const opts = { mapId: S.map, teamSize: S.size, difficulty: S.diff, capLimit: S.caps, timeLimit: S.time, bots: S.bots !== false };
     opts.roster = Game.buildRoster(opts, humans);
     this.inGame = true;
     this.roomSend({ t: 'start', opts });
@@ -265,7 +269,7 @@ const Net = {
     this.hostLabel = host; this.lastHost = performance.now();
     this.links.set('host', new Link(this, host, this.label, false));
     const me = this.meInfo(this.label);
-    this.roomSend({ t: 'hello', from: this.label, driver: me.driver, car: me.car, upgrades: me.upgrades });
+    this.roomSend({ t: 'hello', from: this.label, name: me.name, driver: me.driver, car: me.car, upgrades: me.upgrades });
     this.startHeartbeat();
     if (onOk) onOk();
   },
@@ -309,7 +313,7 @@ const Net = {
     if (!d || typeof d !== 'object') return;
     link.lastSeen = performance.now();
     if (this.role === 'host') {
-      if (d.t === 'st') { if (this.onInput) this.onInput(link.remote, d); }
+      if (d.t === 'st' || d.t === 'up') { if (this.onInput) this.onInput(link.remote, d); }
       else if (d.t === 'ping') link.send({ t: 'pong', ts: d.ts });
     } else {
       this.lastHost = performance.now();

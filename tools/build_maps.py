@@ -16,6 +16,12 @@ from scipy import ndimage
 from shapely.geometry import LineString, Polygon, MultiPolygon, box, Point
 from shapely.ops import unary_union, polygonize, linemerge
 
+# Spielbarkeit: Karte vergrößern und Häuserblöcke nach innen schrumpfen -> breitere Straßen
+SCALE = 1.25        # alles 25 % größer
+BLOCK_INSET = 1.6   # Häuserblöcke an den Außenkanten um so viele Meter verkleinern
+ROAD_EXTRA = 2.0    # Straßen optisch breiter
+TREE_KEEP = 0.4     # Anteil der Bäume, die bleiben (nur Deko, keine Kollision)
+
 MAPS = [
     dict(id="ravensburg", name="Ravensburg", sub="Altstadt & Marienplatz",
          bbox=(9.60710, 47.77850, 9.61790, 47.78450),
@@ -69,10 +75,10 @@ def build(m, osm_dir, preview_dir=None):
     ky = 110540
 
     def proj(lon, lat):
-        return ((lon - minlon) * kx, (maxlat - lat) * ky)
+        return ((lon - minlon) * kx * SCALE, (maxlat - lat) * ky * SCALE)
 
-    W = (maxlon - minlon) * kx
-    H = (maxlat - minlat) * ky
+    W = (maxlon - minlon) * kx * SCALE
+    H = (maxlat - minlat) * ky * SCALE
     world = box(0, 0, W, H)
 
     nodes, ways, rels = {}, {}, []
@@ -219,7 +225,8 @@ def build(m, osm_dir, preview_dir=None):
             for s in segs:
                 if isinstance(s, LineString) and len(s.coords) >= 2:
                     s = s.simplify(0.5)
-                    roads.append(dict(w=ROAD_W[hw], k=ROAD_KIND[hw], p=flat(s.coords), n=t.get("name")))
+                    rw = ROAD_W[hw] * SCALE + (ROAD_EXTRA if ROAD_KIND[hw] <= 1 else 0)
+                    roads.append(dict(w=r1(rw), k=ROAD_KIND[hw], p=flat(s.coords), n=t.get("name")))
             continue
         if t.get("railway") in ("rail", "light_rail", "tram"):
             pts = way_pts(wid)
@@ -279,6 +286,24 @@ def build(m, osm_dir, preview_dir=None):
                 for pp in keep_polys(g, 10):
                     areas.append(("paved", pp))
 
+    # Häuserblöcke nach innen schrumpfen: Reihenhäuser bleiben aneinander, Straßen werden breiter
+    if BLOCK_INSET > 0 and bld_geoms:
+        blocks = unary_union([g.buffer(0.35, join_style=2) for g in bld_geoms])
+        inner = blocks.buffer(-(BLOCK_INSET + 0.35), join_style=2)
+        nb, ng = [], []
+        for b, g in zip(buildings, bld_geoms):
+            gi = g.intersection(inner)
+            parts = [x for x in (gi.geoms if hasattr(gi, "geoms") else [gi]) if isinstance(x, Polygon) and x.area >= 8]
+            if not parts:
+                continue
+            g2 = max(parts, key=lambda x: x.area).simplify(0.35)
+            if not isinstance(g2, Polygon) or g2.is_empty or len(g2.exterior.coords) < 4:
+                continue
+            b = dict(b); b["p"] = flat(list(g2.exterior.coords)[:-1])
+            nb.append(b); ng.append(g2)
+        print(m["id"], "Gebäude", len(buildings), "->", len(nb), file=sys.stderr)
+        buildings, bld_geoms = nb, ng
+
     water = unary_union(water_geoms) if water_geoms else None
     water_polys = []
     if water is not None and not water.is_empty:
@@ -288,8 +313,7 @@ def build(m, osm_dir, preview_dir=None):
     # Bäume (Hindernisse)
     trees = []
     for (x, y), t in node_tags:
-        if t.get("natural") == "tree" and 3 < x < W - 3 and 3 < y < H - 3:
-            pt = Point(x, y)
+        if t.get("natural") == "tree" and 3 < x < W - 3 and 3 < y < H - 3 and rnd.random() < TREE_KEEP:
             trees.append((x, y))
 
     # Labels: POIs & Plätze
@@ -356,8 +380,6 @@ def build(m, osm_dir, preview_dir=None):
         d.polygon([(x / C, y / C) for x, y in b.exterior.coords], fill=255)
     for wp in water_polys:
         d.polygon([(x / C, y / C) for x, y in wp.exterior.coords], fill=255)
-    for x, y in trees:
-        d.ellipse([x / C - 1, y / C - 1, x / C + 1, y / C + 1], fill=255)
     blocked = np.array(img) > 0
     blocked[0, :] = blocked[-1, :] = blocked[:, 0] = blocked[:, -1] = True
     clear = ndimage.distance_transform_edt(~blocked) * C
@@ -376,7 +398,7 @@ def build(m, osm_dir, preview_dir=None):
         return float(xs[i] * C), float(ys[i] * C)
 
     if m.get("bases_m"):
-        bases = [snap(x, y, 9) for x, y in m["bases_m"]]
+        bases = [snap(x * SCALE, y * SCALE, 10) for x, y in m["bases_m"]]
     else:
         ys, xs = np.nonzero(main & (clear >= 11))
         if len(xs) < 2:
@@ -431,14 +453,25 @@ def build(m, osm_dir, preview_dir=None):
                 continue
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
             ix, iy = int(cx / C), int(cy / C)
-            if not (0 <= ix < gw and 0 <= iy < gh) or not main[iy, ix] or clear[iy, ix] < 5.5:
+            if not (0 <= ix < gw and 0 <= iy < gh) or not main[iy, ix] or clear[iy, ix] < 6.5:
                 continue
             if not far_ok(cx, cy, 70):
                 continue
-            a = math.atan2(y2 - y1, x2 - x1)
-            if rnd.random() < 0.5:
-                a += math.pi
-            ramps.append(dict(x=r1(cx), y=r1(cy), a=round(a, 3)))
+            a0 = math.atan2(y2 - y1, x2 - x1)
+
+            def runway_ok(a):
+                # 18 m Anlauf hinten, 40 m Flug-/Landestrecke vorne müssen frei sein
+                for dd in list(range(-18, 0, 3)) + list(range(4, 42, 3)):
+                    px, py = int((cx + math.cos(a) * dd) / C), int((cy + math.sin(a) * dd) / C)
+                    if not (0 <= px < gw and 0 <= py < gh) or clear[py, px] < (3.5 if dd > 0 else 4.5):
+                        return False
+                return True
+            opts = [a0, a0 + math.pi]
+            rnd.shuffle(opts)
+            a = next((o for o in opts if runway_ok(o)), None)
+            if a is None:
+                continue
+            ramps.append(dict(x=r1(cx), y=r1(cy), a=round(math.atan2(math.sin(a), math.cos(a)), 3)))
             occupied.append((cx, cy))
             break
 
