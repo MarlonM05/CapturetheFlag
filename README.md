@@ -31,9 +31,17 @@ Hinweise:
 - Supabase-Gratisprojekte werden nach einer Woche ohne Nutzung pausiert → im Supabase-Dashboard „Restore“ klicken.
 - Gratis-Limit: 2 Mio. Realtime-Nachrichten/Monat. Direkte Verbindungen verbrauchen davon fast nichts.
 
-## Grafik
-Standardmäßig **3D** mit Three.js: echte Häuser aus OpenStreetMap mit Sattel-/Walmdächern, Schatten, 3D-Autos,
-Bäume, Rampen und Flaggen. Für schwache Geräte lässt sich im Hauptmenü „3D-Grafik“ abschalten (klassische 2D-Ansicht).
+## Grafik & Kamera
+- **3D** mit Three.js: Häuser aus OpenStreetMap mit Fassaden, Fenstern, Ziegel-, Sattel- und Walmdächern, Schatten,
+  echte Straßen mit Asphalt, Mittelstreifen, Gehwegen, Bordsteinen und Laternen, 3D-Autos, Bäume, Rampen, Flaggen.
+- **Drohnen-Kamera** (Standard): knapp hinter und über dem Auto, folgt weich und steigt über Häuser im Weg.
+  Taste **C** (am Handy „KAMERA“) wechselt zur Ansicht von oben.
+- Für schwache Geräte: im Hauptmenü „3D-Grafik“ abschalten (klassische 2D-Ansicht).
+
+## Netzcode
+Jeder Spieler steuert sein eigenes Auto selbst und meldet nur die Position (keine Eingabeverzögerung, egal wie gut
+die Verbindung ist). Der Host entscheidet über Treffer, Flaggen, Bots und Neustarts. Positionsdaten laufen über
+einen schnellen WebRTC-Kanal ohne Nachsenden (kein Stau bei Paketverlust), Ereignisse über einen sicheren Kanal.
 
 ## Inhalt
 | Ordner | Was |

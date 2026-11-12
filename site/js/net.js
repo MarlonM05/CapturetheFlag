@@ -23,7 +23,7 @@ const rid = n => Array.from({ length: n }, () => 'abcdefghijkmnpqrstuvwxyz234567
 class Link {
   constructor(net, remote, clientLabel, initiator) {
     this.net = net; this.remote = remote; this.clientLabel = clientLabel;
-    this.mode = 'pending'; this.dc = null; this.pc = null; this.relay = null; this.cands = [];
+    this.mode = 'pending'; this.dc = null; this.fast = null; this.pc = null; this.relay = null; this.cands = [];
     this.lastSeen = performance.now(); this.lastRelaySend = 0; this.closed = false;
     let forceRelay = false;
     try { forceRelay = localStorage.getItem('ctf_force_relay') === '1'; } catch (e) { /* egal */ }
@@ -36,10 +36,12 @@ class Link {
     pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' && initiator) this.fallback(); };
     if (initiator) {
       this.setupDC(pc.createDataChannel('spiel', { ordered: true }));
+      // schneller Kanal: verlorene Pakete werden nicht nachgeschickt (kein Stau)
+      this.setupFast(pc.createDataChannel('schnell', { ordered: false, maxRetransmits: 0 }));
       pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => this.signal({ sdp: pc.localDescription })).catch(() => this.fallback());
       this.timer = setTimeout(() => { if (this.mode !== 'rtc') this.fallback(); }, RTC_TIMEOUT);
     } else {
-      pc.ondatachannel = e => this.setupDC(e.channel);
+      pc.ondatachannel = e => { if (e.channel.label === 'schnell') this.setupFast(e.channel); else this.setupDC(e.channel); };
     }
   }
   signal(data) { this.net.roomSend({ t: 'sig', to: this.remote, from: this.net.label, ...data }); }
@@ -62,6 +64,10 @@ class Link {
     dc.onmessage = e => { let d; try { d = JSON.parse(e.data); } catch (x) { return; } this.net.onLinkMsg(this, d); };
     dc.onclose = () => { if (this.mode === 'rtc' && !this.closed) { this.mode = 'pending'; this.fallback(); } };
   }
+  setupFast(dc) {
+    this.fast = dc;
+    dc.onmessage = e => { let d; try { d = JSON.parse(e.data); } catch (x) { return; } this.net.onLinkMsg(this, d); };
+  }
   // Direkt geht nicht -> über einen eigenen Supabase-Kanal weiterleiten
   fallback() {
     if (this.closed || this.mode === 'relay') return;
@@ -79,9 +85,12 @@ class Link {
     ch.subscribe();
     this.net.linkChanged(this);
   }
-  send(msg) {
+  send(msg, fast) {
     if (this.mode === 'rtc' && this.dc && this.dc.readyState === 'open') {
-      try { this.dc.send(JSON.stringify(msg)); } catch (e) { /* egal */ }
+      const ch = fast && this.fast && this.fast.readyState === 'open' ? this.fast : this.dc;
+      // Stau vermeiden: volle Puffer beim schnellen Kanal überspringen
+      if (fast && ch.bufferedAmount > 64000) return;
+      try { ch.send(JSON.stringify(msg)); } catch (e) { /* egal */ }
     } else if (this.mode === 'relay' && this.relay) {
       try { const p = this.relay.send({ type: 'broadcast', event: 'g', payload: msg }); if (p && p.catch) p.catch(() => {}); } catch (e) { /* egal */ }
     }
@@ -89,6 +98,7 @@ class Link {
   close() {
     this.closed = true; clearTimeout(this.timer);
     try { if (this.dc) this.dc.close(); } catch (e) { /* egal */ }
+    try { if (this.fast) this.fast.close(); } catch (e) { /* egal */ }
     try { if (this.pc) this.pc.close(); } catch (e) { /* egal */ }
     if (this.relay) { try { this.net.sb.removeChannel(this.relay); } catch (e) { /* egal */ } }
   }
@@ -98,7 +108,7 @@ const Net = {
   sb: null, room: null, role: null, code: null, myId: null, label: null, hostLabel: null,
   links: new Map(),   // Host: pid -> Link, Client: 'host' -> Link
   players: [], settings: null, inGame: false, hbTimer: 0, lastHost: 0, sendGate: 0, snapCount: 0,
-  onLobby: null, onStart: null, onSnapshot: null, onPong: null, onInput: null, onDrop: null, onError: null, onToLobby: null,
+  onLobby: null, onStart: null, onSnapshot: null, onEvents: null, onPong: null, onInput: null, onDrop: null, onError: null, onToLobby: null,
 
   available() { return !!(window.supabase && window.supabase.createClient); },
   get active() { return !!this.role; },
@@ -205,19 +215,25 @@ const Net = {
       if (p) { p.link = link.mode; this.lobbyChanged(); }
     } else if (this.onLobby) this.onLobby();
   },
-  // Spielzustand an alle. Über Supabase nur mit verringerter Rate (Gratis-Limit 100 Nachrichten/s).
+  // Spielzustand an alle. Direkt: Zustand über den schnellen Kanal, Ereignisse sicher.
+  // Über Supabase nur mit verringerter Rate (Gratis-Limit 100 Nachrichten/s).
   broadcast(msg) {
+    const now = performance.now();
     const relayed = [...this.links.values()].filter(l => l.mode === 'relay').length;
-    const every = Math.max(2, Math.ceil(relayed * 1.2));
-    this.snapCount++;
+    const relayGap = 1000 / Math.min(15, 45 / Math.max(1, relayed));
     for (const l of this.links.values()) {
-      if (l.mode === 'rtc') l.send(msg);
-      else if (l.mode === 'relay' && (msg.t !== 's' || this.snapCount % every === 0)) {
-        // Ereignisse aus ausgelassenen Zuständen nicht verlieren
-        const m = msg.t === 's' && l.pendingEv && l.pendingEv.length ? { ...msg, ev: l.pendingEv.concat(msg.ev) } : msg;
-        l.send(m); l.pendingEv = [];
-      } else if (l.mode === 'relay' && msg.t === 's') {
-        l.pendingEv = (l.pendingEv || []).concat(msg.ev.filter(e => e[0] !== 's')).slice(-60);
+      if (l.mode === 'rtc') {
+        if (msg.t === 's') {
+          const { ev, ...state } = msg;
+          l.send(state, true);
+          if (ev && ev.length) l.send({ t: 'ev', ev });
+        } else l.send(msg);
+      } else if (l.mode === 'relay') {
+        if (msg.t !== 's') { l.send(msg); continue; }
+        l.pendingEv = (l.pendingEv || []).concat(msg.ev || []);
+        if (now - (l.lastRelay || 0) < relayGap) { l.pendingEv = l.pendingEv.filter(e => e[0] !== 's').slice(-80); continue; }
+        l.lastRelay = now;
+        l.send({ ...msg, ev: l.pendingEv }); l.pendingEv = [];
       }
     }
   },
@@ -264,15 +280,17 @@ const Net = {
       case 'full': this.fail(d.reason); break;
     }
   },
-  // Inputs über Supabase nur ~10x pro Sekunde
+  // Position/Eingaben: direkt über den schnellen Kanal, über Supabase höchstens ~12x pro Sekunde
   send(msg) {
     const l = this.links.get('host'); if (!l) return;
-    if (l.mode === 'relay' && msg.t === 'in') {
-      const now = performance.now();
-      if (now - this.sendGate < 100) return;
-      this.sendGate = now;
-    }
-    l.send(msg);
+    if (msg.t === 'st') {
+      if (l.mode === 'relay') {
+        const now = performance.now();
+        if (now - this.sendGate < 75) return;
+        this.sendGate = now;
+      }
+      l.send(msg, true);
+    } else l.send(msg);
   },
   get linkMode() { const l = this.links.get('host'); return l ? l.mode : null; },
 
@@ -291,11 +309,12 @@ const Net = {
     if (!d || typeof d !== 'object') return;
     link.lastSeen = performance.now();
     if (this.role === 'host') {
-      if (d.t === 'in') { if (this.onInput) this.onInput(link.remote, d); }
+      if (d.t === 'st') { if (this.onInput) this.onInput(link.remote, d); }
       else if (d.t === 'ping') link.send({ t: 'pong', ts: d.ts });
     } else {
       this.lastHost = performance.now();
       if (d.t === 's') { if (this.onSnapshot) this.onSnapshot(d); }
+      else if (d.t === 'ev') { if (this.onEvents) this.onEvents(d.ev); }
       else if (d.t === 'pong') { if (this.onPong) this.onPong(d.ts); }
     }
   },

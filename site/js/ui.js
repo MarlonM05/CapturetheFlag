@@ -10,7 +10,7 @@ const DEFAULT_SAVE = {
   up: {},
   car: 'flitzer',
   driver: 'marlon',
-  settings: { sound: true, autoAim: false, gfx3d: true, size: 4, diff: 1, caps: 3, time: 480, map: 'ravensburg' },
+  settings: { sound: true, autoAim: false, gfx3d: true, cam: 'chase', size: 4, diff: 1, caps: 3, time: 480, map: 'ravensburg' },
   stats: { games: 0, wins: 0, kills: 0, caps: 0 },
 };
 let save = loadSave();
@@ -130,7 +130,7 @@ function matchOpts() {
   const S = save.settings;
   return {
     mapId: S.map, teamSize: S.size, difficulty: S.diff, capLimit: S.caps, timeLimit: S.time,
-    three: save.settings.gfx3d !== false,
+    three: save.settings.gfx3d !== false, camMode: save.settings.cam || 'chase',
     car: save.car, driver: save.driver, upgrades: save.up[save.car] || {}, autoAim: S.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0),
   };
 }
@@ -289,6 +289,7 @@ function togglePause(v) {
 Input.init(canvas);
 Input.onKey = code => {
   if (code === 'Escape' || code === 'KeyP') togglePause();
+  if (code === 'KeyC' && game && game.r3d && !game.demo) { save.settings.cam = game.toggleCam(); writeSave(); }
   if (code === 'KeyM') { save.settings.sound = !save.settings.sound; Sound.setMuted(!save.settings.sound); writeSave(); toast(save.settings.sound ? 'Sound an' : 'Sound aus'); }
 };
 Input.onWheel = dir => { if (game) game.zoom(dir); };
@@ -352,11 +353,12 @@ Net.onError = msg => {
   toast(msg);
 };
 Net.onStart = opts => {
-  opts.three = save.settings.gfx3d !== false;
+  opts.three = save.settings.gfx3d !== false; opts.camMode = save.settings.cam || 'chase';
   opts.autoAim = save.settings.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
   startMatch(opts);
 };
 Net.onSnapshot = snap => { if (game && game.isClient) game.applySnapshot(snap); };
+Net.onEvents = ev => { if (game && game.isClient && Array.isArray(ev)) game.applyEvents(ev); };
 Net.onPong = ts => { if (game && game.isClient) game.onPong(ts); };
 Net.onInput = (pid, d) => { if (game && game.isHost) game.remoteInput(pid, d); };
 Net.onDrop = pid => { if (game && game.isHost) game.dropHuman(pid); };
@@ -386,7 +388,7 @@ $('#btn-lobby-leave').onclick = () => { Net.leave(); show('online'); };
 $('#btn-lobby-start').onclick = () => {
   if (Net.role !== 'host') return;
   const opts = Net.startMatch();
-  opts.three = save.settings.gfx3d !== false;
+  opts.three = save.settings.gfx3d !== false; opts.camMode = save.settings.cam || 'chase';
   opts.autoAim = save.settings.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
   startMatch(opts);
 };

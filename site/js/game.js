@@ -55,6 +55,7 @@ const Input = {
       this.touch.active = true;
       for (const t of e.changedTouches) {
         const btn = this.touchButton(t.clientX, t.clientY);
+        if (btn === 'cam') { if (Input.onKey) Input.onKey('KeyC'); continue; }
         if (btn) { this.touch[btn] = t.identifier; continue; }
         if (t.clientX < innerWidth * 0.5) { if (!this.touch.move) this.touch.move = { id: t.identifier, ox: t.clientX, oy: t.clientY, x: t.clientX, y: t.clientY }; }
         else if (!this.touch.aim) this.touch.aim = { id: t.identifier, ox: t.clientX, oy: t.clientY, x: t.clientX, y: t.clientY };
@@ -90,6 +91,7 @@ const Input = {
       { id: 'jump', label: 'SPRUNG', x: bx - r * 2.4, y: by, r },
       { id: 'boost', label: 'TURBO', x: bx - r * 1.4, y: by - r * 2.2, r },
       { id: 'mine', label: 'MINE', x: bx - r * 3.9, y: by - r * 1.7, r: r * 0.8 },
+      { id: 'cam', label: 'KAMERA', x: innerWidth - r * 0.9, y: r * 3.2, r: r * 0.6 },
     ];
   },
   touchButton(x, y) {
@@ -173,6 +175,7 @@ class Car {
     this.hp = this.st.hp; this.boost = this.st.boost; this.boosting = false;
     this.jumpCd = 0; this.fireCd = 0; this.mines = 2; this.mineCd = 0; this.mineRegen = 0;
     this.alive = true; this.protect = first ? 0 : 2.5; this.flag = -1; this.flashT = 0;
+    this.life = (this.life || 0) + 1; this.rs = null; this.sunk = false; this.crashAcc = 0; this.steerS = 0;
     this.hitBy = new Map(); this.sinkT = 0; this.rampCd = 0; this.smokeT = 0; this.airT = 0;
     this.lastSkid = null;
   }
@@ -209,6 +212,7 @@ class Game {
       c.id = r.id; c.key = r.key; c.human = !!r.human;
       if (c.human || this.isClient) c.bot = null;
       else if (c.bot) c.bot.role = r.role || 'attack';
+      c.remote = this.isHost && c.human && r.key !== me;
       this.cars.push(c);
     }
     this.byId = new Map(this.cars.map(c => [c.id, c]));
@@ -221,6 +225,9 @@ class Game {
       try { this.r3d = new Renderer3D(this, c3); } catch (e) { console.error(e); this.r3d = null; }
     }
     if (!this.r3d && c3) c3.style.display = 'none';
+    // Kamera: 'chase' = Drohne hinter dem Auto, 'top' = von oben
+    this.camMode = this.r3d ? (opts.camMode || 'chase') : 'top';
+    this.camYaw = this.player.a;
     this.viewRect = { x0: 0, y0: 0, x1: 1, y1: 1 };
     this.resize();
     this._onResize = () => this.resize();
@@ -269,6 +276,13 @@ class Game {
   updateZoom() {
     const base = Math.hypot(innerWidth, innerHeight) / 150;
     this.Z = Math.round(clamp(base * this.zoomMul, 3.2, 16) * this.dpr * 4) / 4;
+  }
+  toggleCam() {
+    if (!this.r3d) return this.camMode;
+    this.camMode = this.camMode === 'chase' ? 'top' : 'chase';
+    this.camYaw = this.player.a;
+    this.say(this.camMode === 'chase' ? 'Kamera: Drohne' : 'Kamera: von oben', '#fff', 1, false);
+    return this.camMode;
   }
   zoom(dir) { this.zoomMul = clamp(this.zoomMul * (dir > 0 ? 0.9 : 1.1), 0.6, 1.6); this.updateZoom(); }
 
@@ -353,7 +367,7 @@ class Game {
       }
       if (c.bot) this.think(c, dt);
       if (playing && this.state !== 'over') this.weapons(c, dt); else c.input.fire = false;
-      this.physics(c, dt, playing);
+      if (c.remote) this.remoteMove(c, dt, playing); else this.physics(c, dt, playing);
     }
     this.carCollisions();
     this.updateBullets(dt);
@@ -371,6 +385,17 @@ class Game {
     this.shake = Math.max(0, this.shake - dt * 3);
     // Kamera
     const p = this.player;
+    if (this.camMode === 'chase') {
+      if (p.alive) {
+        const vF = p.vx * Math.cos(p.a) + p.vy * Math.sin(p.a);
+        if (vF > -3) this.camYaw += angNorm(p.a - this.camYaw) * (1 - Math.exp(-dt * 3.2));
+        this.cam.x = p.x; this.cam.y = p.y;
+      }
+      if (this.demo) return;
+      if (this.player.alive) Sound.engineUpdate(clamp(p.speed / p.st.speed, 0, 1.3), p.boosting, this.state !== 'over');
+      else Sound.engineUpdate(0, false, false);
+      return;
+    }
     let tx = p.x + p.vx * 0.45, ty = p.y + p.vy * 0.45;
     if (!Input.touch.active && Input.mouse.moved) {
       const mw = this.screenToWorld(Input.mouse.x, Input.mouse.y);
@@ -399,7 +424,8 @@ class Game {
         const dx = T.move.x - T.move.ox, dy = T.move.y - T.move.oy;
         const m = Math.hypot(dx, dy), R = Math.min(innerWidth, innerHeight) * 0.12;
         if (m > 8) {
-          const want = Math.atan2(dy, dx);
+          // in der Drohnen-Ansicht heißt „nach oben“ = geradeaus
+          const want = this.camMode === 'chase' ? this.camYaw + Math.atan2(dx, -dy) : Math.atan2(dy, dx);
           let diff = angNorm(want - c.a);
           const mag = clamp(m / R, 0, 1);
           if (Math.abs(diff) > 2.4 && c.speed < 6) { inp.thr = -mag; inp.steer = -Math.sign(diff); }
@@ -408,7 +434,7 @@ class Game {
       }
       if (T.aim) {
         const dx = T.aim.x - T.aim.ox, dy = T.aim.y - T.aim.oy;
-        if (Math.hypot(dx, dy) > 10) { inp.aim = Math.atan2(dy, dx); inp.fire = Math.hypot(dx, dy) > 28; inp.manualAim = true; }
+        if (Math.hypot(dx, dy) > 10) { inp.aim = this.camMode === 'chase' ? this.camYaw + Math.atan2(dx, -dy) : Math.atan2(dy, dx); inp.fire = Math.hypot(dx, dy) > 28; inp.manualAim = true; }
         else { inp.fire = false; inp.manualAim = false; }
       } else { inp.fire = false; inp.manualAim = false; }
       inp.jump = !!T.jump; inp.boost = !!T.boost; inp.mine = !!T.mine;
@@ -449,7 +475,12 @@ class Game {
   // ---------------- Physik ----------------
   physics(c, dt, playing) {
     const W = this.world, st = c.st, inp = c.input;
-    const thr = playing ? inp.thr : 0, steer = inp.steer;
+    const thr = playing ? inp.thr : 0;
+    // Lenkung weich einblenden (Menschen), Zurückstellen geht schneller
+    const back = Math.abs(inp.steer) < Math.abs(c.steerS) || Math.sign(inp.steer) !== Math.sign(c.steerS);
+    const sr = c.bot ? 12 : back ? 7 : 3.2;
+    c.steerS += clamp(inp.steer - c.steerS, -sr * dt, sr * dt);
+    const steer = c.steerS;
     c.protect = Math.max(0, c.protect - dt); c.flashT = Math.max(0, c.flashT - dt);
     c.jumpCd = Math.max(0, c.jumpCd - dt); c.rampCd = Math.max(0, c.rampCd - dt);
     // Boden
@@ -483,7 +514,9 @@ class Game {
       const grip = c.boosting ? 5 : 9;
       vL *= Math.exp(-grip * dt);
       const turnF = clamp(Math.abs(vF) / 7, 0, 1) * Math.sign(vF || 1);
-      c.a += steer * st.turn * dt * turnF * (c.boosting ? 0.8 : 1);
+      // bei hohem Tempo weniger empfindlich
+      const tf = c.bot ? 1 : 0.8 * (1 - 0.35 * clamp(Math.abs(vF) / st.speed, 0, 1.3));
+      c.a += steer * st.turn * tf * dt * turnF * (c.boosting ? 0.8 : 1);
       if (c.boosting && Math.random() < 0.7) {
         this.particles.add({ x: c.x - fx * c.def.len * 0.55, y: c.y - fy * c.def.len * 0.55, vx: -fx * 10 + rand(-2, 2), vy: -fy * 10 + rand(-2, 2), life: 0.25, max: 0.25, size: 0.6, grow: -1.5, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffffff', add: true });
       }
@@ -533,6 +566,7 @@ class Game {
           c.vx -= 1.3 * vn * hit.nx; c.vy -= 1.3 * vn * hit.ny;
           c.vx *= 0.92; c.vy *= 0.92;
           if (-vn > 13) {
+            if (this.isClient && c === this.player) c.crashAcc += (-vn - 13) * 1.6 / c.def.mass;
             this.damage(c, (-vn - 13) * 1.6 / c.def.mass, null, 'crash');
             Sound.play('clank', this.vol(c.x, c.y));
             if (c.isPlayer) this.shake = Math.min(1, this.shake + 0.3);
@@ -547,6 +581,7 @@ class Game {
       c.sinkT += dt; c.vx *= 0.9; c.vy *= 0.9;
       if (Math.random() < 0.5) this.particles.add({ x: c.x + rand(-2, 2), y: c.y + rand(-2, 2), vx: rand(-3, 3), vy: rand(-3, 3), life: 0.7, max: 0.7, size: 0.6, grow: 2, color: '#cfe8ff', alpha: 0.7 });
       if (c.sinkT > 0.5) {
+        if (this.isClient) { c.sunk = true; return; }
         Sound.play('splash', this.vol(c.x, c.y));
         this.kill(c, c.lastAttacker && c.lastAttackT > performance.now() - 5000 ? c.lastAttacker : null, 'water');
         return;
@@ -560,14 +595,42 @@ class Game {
         this.particles.add({ x: c.x, y: c.y, z: c.z + 1, vz: 2, vx: rand(-1, 1) + c.vx * 0.2, vy: rand(-1, 1) + c.vy * 0.2, life: 1.2, max: 1.2, size: 0.6, grow: 1.8, color: c.hp < c.st.hp * 0.15 ? '#2a2a2a' : '#666', alpha: 0.55 });
       }
     }
-    // Minen
+    this.dropMine(c, dt, playing);
+  }
+  dropMine(c, dt, playing) {
     c.mineCd = Math.max(0, c.mineCd - dt);
     if (c.mines < 3) { c.mineRegen += dt; if (c.mineRegen > 12) { c.mineRegen = 0; c.mines++; } }
-    if (playing && !this.isClient && inp.mine && c.mines > 0 && c.mineCd <= 0 && c.onGround) {
+    if (playing && !this.isClient && c.input.mine && c.mines > 0 && c.mineCd <= 0 && c.z <= c.groundZ + 0.3) {
       c.mines--; c.mineCd = 0.8;
+      const fx = Math.cos(c.a), fy = Math.sin(c.a);
       this.mines.push({ x: c.x - fx * c.def.len * 0.7, y: c.y - fy * c.def.len * 0.7, team: c.team, owner: c, arm: 0.9, life: 60 });
       Sound.play('mine');
     }
+  }
+  // Host: Auto eines Mitspielers – die Position meldet der Mitspieler selbst (keine Eingabeverzögerung)
+  remoteMove(c, dt, playing) {
+    c.protect = Math.max(0, c.protect - dt); c.flashT = Math.max(0, c.flashT - dt);
+    const rs = c.rs;
+    if (rs && rs.life === c.life) {
+      const age = Math.min(0.25, (performance.now() - rs.t) / 1000);
+      const tx = rs.x + rs.vx * age, ty = rs.y + rs.vy * age;
+      const k = Math.min(1, dt * 15);
+      if (Math.hypot(tx - c.x, ty - c.y) > 10) { c.x = tx; c.y = ty; }
+      else { c.x += (tx - c.x) * k; c.y += (ty - c.y) * k; }
+      c.z += (rs.z - c.z) * k; c.a += angNorm(rs.a - c.a) * k;
+      c.vx = rs.vx; c.vy = rs.vy; c.vz = rs.vz; c.boosting = rs.b;
+      if (rs.cd > 0) { const d = rs.cd; rs.cd = 0; this.damage(c, d, null, 'crash'); }
+      if (rs.w && c.alive) { Sound.play('splash', this.vol(c.x, c.y)); this.kill(c, c.lastAttacker && c.lastAttackT > performance.now() - 5000 ? c.lastAttacker : null, 'water'); return; }
+    }
+    const b = this.world.buildingAt(c.x, c.y);
+    c.groundZ = b && c.z >= b.h - 0.5 ? b.h : 0;
+    c.onGround = c.z <= c.groundZ + 0.15;
+    this.dropMine(c, dt, playing);
+  }
+  // Rückstoß für Autos, die ein Mitspieler selbst steuert
+  kick(c, dvx, dvy, dvz, setVz) {
+    if (c.remote) this.events.push(['kb', c.id, r1(dvx), r1(dvy), r1(dvz), setVz ? 1 : 0]);
+    c.vx += dvx; c.vy += dvy; if (setVz) c.vz = dvz; else c.vz += dvz;
   }
   skid(c) {
     const fx = Math.cos(c.a), fy = Math.sin(c.a), px = -fy, py = fx;
@@ -628,7 +691,7 @@ class Game {
           const top = dz > 0 ? a : b, bot = dz > 0 ? b : a;
           if (Math.abs(dz) < 2.6 && top.vz < -4 && top.team !== bot.team) {
             this.damage(bot, 30 + 18 * top.def.mass, top, 'stomp');
-            top.vz = 7;
+            this.kick(top, 0, 0, 7, true);
             this.boom(bot.x, bot.y, 0.6, false);
             if (top.isPlayer) this.say('PLATTGEMACHT!', '#ffb14d', 1.2, false);
           }
@@ -656,7 +719,7 @@ class Game {
   // ---------------- Waffen ----------------
   weapons(c, dt) {
     const inp = c.input;
-    const turnRate = c.human ? 30 : 7;
+    const turnRate = c.human ? 40 : 7;
     const diff = angNorm(inp.aim - c.turret);
     c.turret += clamp(diff, -turnRate * dt, turnRate * dt);
     c.fireCd -= dt;
@@ -770,7 +833,7 @@ class Game {
       const f = clamp(1 - Math.max(0, dd - c.def.radius) / R, 0.25, 1);
       this.damage(c, b.dmg * f, b.owner, 'boom');
       const nx = (c.x - b.x) / (dd || 1), ny = (c.y - b.y) / (dd || 1);
-      c.vx += nx * 8 * f / c.def.mass; c.vy += ny * 8 * f / c.def.mass; c.vz += 4 * f / c.def.mass;
+      this.kick(c, nx * 8 * f / c.def.mass, ny * 8 * f / c.def.mass, 4 * f / c.def.mass, false);
     }
     for (const p of this.props) if (p.alive && p.hp > 0 && d2(b.x, b.y, p.x, p.y) < (R + 1) ** 2) this.breakProp(p, null);
   }
@@ -941,11 +1004,12 @@ class Game {
   netTick() {
     this.netT = (this.netT || 0) + 1;
     if (this.netT % 3) return; // 20 Zustände pro Sekunde
+    this.netSeq = (this.netSeq || 0) + 1;
     const snap = {
-      t: 's', st: this.state, tm: r1(this.time), ct: r2(this.countT), sc: this.score,
+      t: 's', n: this.netSeq, st: this.state, tm: r1(this.time), ct: r2(this.countT), sc: this.score,
       c: this.cars.map(c => [c.id, r2(c.x), r2(c.y), r2(c.a), r2(c.turret), r2(c.z), r1(c.vx), r1(c.vy), Math.ceil(c.hp), c.alive ? 1 : 0, c.flag,
         c.boosting ? 1 : 0, c.protect > 0 ? 1 : 0, r1(c.respawnT), c.kills, c.deaths, c.caps, c.returns, c.score, c.earned, c.mines, r2(c.boost),
-        c.killedBy ? c.killedBy.id : 0, r1(c.vz)]),
+        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life]),
       f: this.flags.map(f => [f.state, r1(f.x), r1(f.y), f.carrier ? f.carrier.id : 0, r1(f.dropT)]),
       pr: this.props.map(p => (p.alive ? 1 : 0)).join(''),
       pk: this.pickups.map(p => [r1(p.x), r1(p.y), p.t, p.active ? 1 : 0]),
@@ -955,12 +1019,19 @@ class Game {
     this.events = [];
     if (typeof Net !== 'undefined') Net.broadcast(snap);
   }
+  // Mitspieler meldet Position + Eingaben
   remoteInput(key, d) {
     const c = this.cars.find(o => o.key === key);
-    if (!c || !c.human) return;
+    if (!c || !c.human || d.t !== 'st') return;
+    const num = (v, a, b) => { v = +v; return Number.isFinite(v) ? clamp(v, a, b) : 0; };
     const i = c.input;
-    i.thr = clamp(+d.th || 0, -1, 1); i.steer = clamp(+d.st || 0, -1, 1); i.aim = +d.a || 0;
-    i.fire = !!d.f; i.jump = !!d.j; i.boost = !!d.b; i.mine = !!d.m;
+    i.aim = num(d.tu, -10, 10); i.fire = !!d.f; i.mine = !!d.m; i.boost = !!d.b; i.thr = 0; i.steer = 0;
+    if (!c.alive || d.l !== c.life) return;
+    const old = c.rs;
+    c.rs = {
+      x: num(d.x, 0, this.world.w), y: num(d.y, 0, this.world.h), a: num(d.a, -100, 100), vx: num(d.vx, -80, 80), vy: num(d.vy, -80, 80),
+      z: num(d.z, 0, 80), vz: num(d.vz, -80, 80), b: !!d.b, w: !!d.w || !!(old && old.w), cd: num(d.cd, 0, 200) + (old ? old.cd : 0), life: d.l, t: performance.now(),
+    };
   }
   // Spieler hat die Verbindung verloren -> Bot übernimmt
   dropHuman(key) {
@@ -975,11 +1046,14 @@ class Game {
     const me = this.player;
     this.readPlayerInput(); this.showBoard = !!Input.keys.Tab;
     const playing = this.state === 'play';
-    // Eingaben an den Host (30x pro Sekunde)
+    // eigene Position + Eingaben an den Host (direkt 30x/s, über Server 12x/s)
     this.sendT = (this.sendT || 0) + 1;
-    if (this.sendT % 2 === 0 && typeof Net !== 'undefined') {
+    const every = typeof Net !== 'undefined' && Net.linkMode === 'relay' ? 5 : 2;
+    if (this.sendT % every === 0 && typeof Net !== 'undefined' && me.alive) {
       const i = me.input;
-      Net.send({ t: 'in', th: i.thr, st: i.steer, a: r2(i.aim), f: i.fire ? 1 : 0, j: i.jump ? 1 : 0, b: i.boost ? 1 : 0, m: i.mine ? 1 : 0 });
+      Net.send({ t: 'st', l: me.life, x: r2(me.x), y: r2(me.y), a: r2(me.a), vx: r1(me.vx), vy: r1(me.vy), z: r2(me.z), vz: r1(me.vz),
+        tu: r2(i.aim), f: i.fire ? 1 : 0, m: i.mine ? 1 : 0, b: me.boosting ? 1 : 0, w: me.sunk ? 1 : 0, cd: r1(me.crashAcc) });
+      me.crashAcc = 0;
     }
     // eigenes Auto lokal vorhersagen
     if (me.alive && this.state !== 'over') {
@@ -1020,6 +1094,7 @@ class Game {
   onPong(ts) { const r = (performance.now() - ts) / 1000; this.rtt = this.rtt * 0.7 + r * 0.3; }
   applySnapshot(s) {
     const now = performance.now(), me = this.player;
+    if (s.n) { if (s.n <= (this.lastSeq || 0)) return; this.lastSeq = s.n; }  // veraltete Pakete verwerfen
     const prev = this.state;
     this.time = s.tm; this.score = s.sc; this.countT = s.ct;
     if (s.st === 'countdown') {
@@ -1036,14 +1111,11 @@ class Game {
       c.killedBy = a[22] ? this.byId.get(a[22]) : null;
       if (c.alive && c.hp < oldHp - 0.5) c.flashT = 0.08;
       if (c === me) {
-        c.boost = a[21];
-        const lat = clamp(this.rtt / 2, 0, 0.3);
-        const ex = a[1] + a[6] * lat, ey = a[2] + a[7] * lat;
-        if ((!wasAlive && c.alive) || Math.hypot(ex - c.x, ey - c.y) > 8) {
+        // Die eigene Position bestimmt der Spieler selbst – nur beim Neustart übernimmt er die vom Host
+        if (c.alive && (a[24] !== c.life || !wasAlive)) {
           c.x = a[1]; c.y = a[2]; c.a = a[3]; c.turret = a[4]; c.z = a[5]; c.vx = a[6]; c.vy = a[7]; c.vz = a[23];
-        } else {
-          c.x += (ex - c.x) * 0.15; c.y += (ey - c.y) * 0.15;
-          if (Math.abs(a[5] - c.z) > 2.5) { c.z = a[5]; c.vz = a[23]; }
+          c.life = a[24]; c.sunk = false; c.crashAcc = 0; c.boost = c.st.boost; c.steerS = 0; c.jumpCd = 0;
+          this.camYaw = c.a;
         }
         if (wasAlive && !c.alive) Sound.engineStop();
         this.earned = c.earned + (this.endBonus || 0);
@@ -1061,7 +1133,12 @@ class Game {
     }
     this.pickups = s.pk.map(a => ({ x: a[0], y: a[1], t: a[2], active: !!a[3] }));
     this.mines = s.m.map(a => ({ x: a[0], y: a[1], team: a[2], arm: a[3] ? 0 : 1 }));
-    for (const e of s.ev) {
+    if (s.ev) this.applyEvents(s.ev);
+    if (this.state === 'over') this.earned = me.earned + (this.endBonus || 0);
+  }
+  applyEvents(list) {
+    const me = this.player;
+    for (const e of list) {
       const o = this.byId.get(e[1]);
       switch (e[0]) {
         case 's': {
@@ -1079,11 +1156,11 @@ class Game {
           break;
         }
         case 'e': if (o === me) this.earnFx(e[2], e[3], e[4], e[5]); break;
-        case 'p': if (o) this.pickupFx(o, e[2]); break;
+        case 'p': if (o) { this.pickupFx(o, e[2]); if (o === me && e[2] === 1) me.boost = me.st.boost; } break;
+        case 'kb': if (o === me && me.alive) { me.vx += e[2]; me.vy += e[3]; if (e[5]) me.vz = e[4]; else me.vz += e[4]; me.onGround = false; } break;
         case 'k': { const p = this.props[e[1]]; if (p && p.alive) { p.alive = false; this.breakPropFx(p, this.byId.get(e[2])); } break; }
       }
     }
-    if (this.state === 'over') this.earned = me.earned + (this.endBonus || 0);
   }
   clientEnd() {
     this.state = 'over';
@@ -1539,7 +1616,8 @@ class Game {
     g.font = `600 ${11 * D}px system-ui, sans-serif`;
     for (const c of this.cars) {
       if (!c.alive || c.isPlayer) continue;
-      const s = this.worldToScreen(c.x, c.y, c.z + 2);
+      const s = this.worldToScreen(c.x, c.y, c.z + 2.6);
+      if (s.behind) continue;
       if (s.x < -50 || s.y < -50 || s.x > this.canvas.width + 50 || s.y > this.canvas.height + 50) continue;
       const tm = TEAM[c.team];
       const y = s.y - 26 * D;
@@ -1590,6 +1668,7 @@ class Game {
     g.fillStyle = '#ffe66d'; g.font = `700 ${14 * D}px system-ui, sans-serif`; g.fillText(`💰 +${this.earned} Kohle`, 20 * D, 25 * D);
     g.fillStyle = 'rgba(255,255,255,0.5)'; g.font = `500 ${10 * D}px system-ui, sans-serif`;
     let info = this.map.name + ' – ' + this.map.sub;
+    if (this.r3d && !Input.touch.active) info += '  ·  [C] Kamera';
     if (this.isHost) info += '  ·  🌐 Host';
     if (this.isClient) info += `  ·  🌐 ${typeof Net !== 'undefined' && Net.linkMode === 'relay' ? 'über Server' : 'direkt'} · Ping ${Math.round(this.rtt * 1000)} ms`;
     g.fillText(info, 12 * D, 52 * D);
@@ -1680,6 +1759,7 @@ class Game {
     for (const f of this.flags) {
       if (f.carrier && f.carrier.isPlayer) continue;
       const s = this.worldToScreen(f.x, f.y, 0);
+      if (s.behind) { s.x = SW - s.x; s.y = SH * 3; }
       const mrg = 50 * D;
       if (s.x > mrg && s.y > mrg && s.x < SW - mrg && s.y < SH - mrg) continue;
       if (f.team === p.team && f.state === 'base') continue;
@@ -1696,6 +1776,7 @@ class Game {
     if (p.flag >= 0) {
       const b = this.world.bases[p.team];
       const s = this.worldToScreen(b.x, b.y, 0);
+      if (s.behind) { s.x = SW - s.x; s.y = SH * 3; }
       const ang = Math.atan2(s.y - SH / 2, s.x - SW / 2);
       const r = Math.min(SW, SH) * 0.16;
       g.save(); g.translate(SW / 2 + Math.cos(ang) * r, SH / 2 + Math.sin(ang) * r); g.rotate(ang);

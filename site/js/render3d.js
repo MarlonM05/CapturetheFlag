@@ -123,62 +123,230 @@ class Renderer3D {
     return g;
   }
 
-  // ---------------- Gebäude: ein einziges Mesh mit Satteldächern ----------------
+  // ---------------- Texturen (Fassade, Dach, Asphalt …) ----------------
+  canvasTex(w, h, draw, repeat = true) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    draw(c.getContext('2d'), w, h);
+    const t = this.track(new THREE.CanvasTexture(c));
+    if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; }
+    t.anisotropy = this.gl.capabilities.getMaxAnisotropy();
+    return t;
+  }
+  noise(g, w, h, n, a, b) {
+    for (let i = 0; i < n; i++) { g.fillStyle = Math.random() < 0.5 ? a : b; g.fillRect(Math.random() * w, Math.random() * h, 1 + Math.random() * 2, 1 + Math.random() * 2); }
+  }
+  makeTextures() {
+    if (this.tex) return this.tex;
+    // Fassade: 2 Fenster × 2 Stockwerke = 6 m × 6,4 m, graustufig (wird mit der Wandfarbe eingefärbt)
+    const facade = this.canvasTex(256, 256, (g, w, h) => {
+      g.fillStyle = '#f4f4f4'; g.fillRect(0, 0, w, h);
+      this.noise(g, w, h, 900, 'rgba(0,0,0,0.05)', 'rgba(255,255,255,0.08)');
+      for (let fy = 0; fy < 2; fy++) {
+        g.fillStyle = 'rgba(0,0,0,0.10)'; g.fillRect(0, fy * 128 + 124, w, 4);
+        for (let fx = 0; fx < 2; fx++) {
+          const x = fx * 128 + 38, y = fy * 128 + 30;
+          g.fillStyle = '#5c5c5c'; g.fillRect(x - 14, y - 2, 12, 66); g.fillRect(x + 54, y - 2, 12, 66); // Fensterläden
+          g.fillStyle = '#d8d8d8'; g.fillRect(x - 3, y - 3, 58, 68);
+          const gr = g.createLinearGradient(x, y, x + 52, y + 62);
+          gr.addColorStop(0, '#5d6f80'); gr.addColorStop(0.5, '#2c3946'); gr.addColorStop(1, '#46566a');
+          g.fillStyle = gr; g.fillRect(x, y, 52, 62);
+          g.fillStyle = '#d8d8d8'; g.fillRect(x + 24, y, 4, 62); g.fillRect(x, y + 26, 52, 4);
+          g.fillStyle = '#c4c4c4'; g.fillRect(x - 6, y + 64, 64, 6);
+        }
+      }
+    });
+    // Dachziegel
+    const roof = this.canvasTex(128, 128, (g, w, h) => {
+      g.fillStyle = '#ececec'; g.fillRect(0, 0, w, h);
+      for (let y = 0; y < h; y += 16) {
+        g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(0, y + 13, w, 3);
+        for (let x = (y / 16) % 2 ? 8 : 0; x < w; x += 16) { g.fillStyle = 'rgba(0,0,0,0.12)'; g.fillRect(x, y, 2, 14); }
+      }
+      this.noise(g, w, h, 300, 'rgba(0,0,0,0.08)', 'rgba(255,255,255,0.1)');
+    });
+    const asphalt = this.canvasTex(256, 256, (g, w, h) => {
+      g.fillStyle = '#4b4e54'; g.fillRect(0, 0, w, h);
+      this.noise(g, w, h, 4000, 'rgba(0,0,0,0.18)', 'rgba(255,255,255,0.07)');
+      g.strokeStyle = 'rgba(20,20,20,0.25)'; g.lineWidth = 2; g.beginPath(); g.moveTo(30, 0); g.bezierCurveTo(60, 80, 10, 150, 50, 256); g.stroke();
+    });
+    const pavers = (base) => this.canvasTex(128, 128, (g, w, h) => {
+      g.fillStyle = base; g.fillRect(0, 0, w, h);
+      g.strokeStyle = 'rgba(0,0,0,0.18)'; g.lineWidth = 2;
+      for (let y = 0; y <= h; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+      for (let y = 0; y < h; y += 32) for (let x = (y / 32) % 2 ? 16 : 0; x <= w; x += 32) { g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + 32); g.stroke(); }
+      this.noise(g, w, h, 500, 'rgba(0,0,0,0.06)', 'rgba(255,255,255,0.08)');
+    });
+    const dash = this.canvasTex(64, 16, (g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = '#f2f2ea'; g.fillRect(0, 0, w * 0.55, h); });
+    this.tex = { facade, roof, asphalt, sidewalk: pavers('#a6a296'), foot: pavers('#ada28c'), dash };
+    return this.tex;
+  }
+
+  // ---------------- Gebäude: Fassaden mit Fenstern, Ziegeldächer ----------------
   buildBuildings() {
-    const pos = [], col = [];
-    const push = (x, h, y, c) => { pos.push(x, h, y); col.push(c.r, c.g, c.b); };
-    const tri = (a, b, c, color) => { push(a[0], a[1], a[2], color); push(b[0], b[1], b[2], color); push(c[0], c[1], c[2], color); };
-    const quad = (a, b, c, d, color) => { tri(a, b, c, color); tri(a, c, d, color); };
+    const T = this.makeTextures();
+    const wall = { pos: [], col: [], uv: [] }, roofB = { pos: [], col: [], uv: [] };
+    const put = (B, v, c, u) => { B.pos.push(v[0], v[1], v[2]); B.col.push(c.r, c.g, c.b); B.uv.push(u[0], u[1]); };
+    const tri = (B, a, b, c, col, ua, ub, uc) => { put(B, a, col, ua); put(B, b, col, ub); put(B, c, col, uc); };
+    const FW = 6, FH = 6.4;  // Fassaden-Kachel in Metern
     for (const b of this.game.world.buildings) {
       const p = b.p, n = p.length / 2, h = b.h;
-      const wall = R3.col(b.wall), roof = R3.col(b.roof);
-      const wallDark = wall.clone().multiplyScalar(0.9);
+      const wc = R3.col(b.wall), rc = R3.col(b.roof);
       // Wände
+      let run = 0;
       for (let i = 0; i < n; i++) {
         const j = (i + 1) % n;
         const ax = p[i * 2], ay = p[i * 2 + 1], bx = p[j * 2], by = p[j * 2 + 1];
-        quad([ax, 0, ay], [bx, 0, by], [bx, h, by], [ax, h, ay], i % 2 ? wall : wallDark);
+        const L = Math.hypot(bx - ax, by - ay);
+        const u0 = run / FW, u1 = (run + L) / FW, v1 = h / FH;
+        run += L;
+        tri(wall, [ax, 0, ay], [bx, 0, by], [bx, h, by], wc, [u0, 0], [u1, 0], [u1, v1]);
+        tri(wall, [ax, 0, ay], [bx, h, by], [ax, h, ay], wc, [u0, 0], [u1, v1], [u0, v1]);
       }
       // Dach
       if (!b.flat && n === 4) {
-        // Satteldach entlang der längeren Seite
         let k = 0;
         const len = i => Math.hypot(p[((i + 1) % 4) * 2] - p[i * 2], p[((i + 1) % 4) * 2 + 1] - p[i * 2 + 1]);
         if (len(1) > len(0)) k = 1;
         const P = i => [p[((i + k) % 4) * 2], p[((i + k) % 4) * 2 + 1]];
         const [p0, p1, p2, p3] = [P(0), P(1), P(2), P(3)];
-        const rh = h + Math.min(4.5, len((k + 1) % 4) * 0.42);
+        const half = len((k + 1) % 4) / 2, rise = Math.min(4.5, half * 0.85);
+        const rh = h + rise, slope = Math.hypot(half, rise) / 3, ridge = len(k) / 3;
         const r0 = [(p0[0] + p3[0]) / 2, rh, (p0[1] + p3[1]) / 2], r1 = [(p1[0] + p2[0]) / 2, rh, (p1[1] + p2[1]) / 2];
         const q = v => [v[0], h, v[1]];
-        quad(q(p0), q(p1), r1, r0, roof);
-        quad(q(p2), q(p3), r0, r1, roof.clone().multiplyScalar(0.82));
-        tri(q(p3), q(p0), r0, wall); tri(q(p1), q(p2), r1, wall);
+        const dark = rc.clone().multiplyScalar(0.84);
+        tri(roofB, q(p0), q(p1), r1, rc, [0, 0], [ridge, 0], [ridge, slope]); tri(roofB, q(p0), r1, r0, rc, [0, 0], [ridge, slope], [0, slope]);
+        tri(roofB, q(p2), q(p3), r0, dark, [0, 0], [ridge, 0], [ridge, slope]); tri(roofB, q(p2), r0, r1, dark, [0, 0], [ridge, slope], [0, slope]);
+        // Giebel (Wandfarbe, ohne Fenster)
+        const gv = h / FH, gt = rh / FH;
+        tri(wall, q(p3), q(p0), r0, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
+        tri(wall, q(p1), q(p2), r1, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
       } else if (!b.flat && n <= 10 && this.convex(p)) {
-        // Walmdach zur Mitte
         let A = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; A += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; }
         const rh = h + Math.min(4, Math.sqrt(Math.abs(A / 2)) * 0.22 + 1.2);
         const apex = [b.cx, rh, b.cy];
         for (let i = 0; i < n; i++) {
           const j = (i + 1) % n;
-          tri([p[i * 2], h, p[i * 2 + 1]], [p[j * 2], h, p[j * 2 + 1]], apex, i % 2 ? roof : roof.clone().multiplyScalar(0.85));
+          const ax = p[i * 2], ay = p[i * 2 + 1], bx = p[j * 2], by = p[j * 2 + 1];
+          const L = Math.hypot(bx - ax, by - ay) || 1;
+          // Abstand der Spitze zur Kante -> v
+          const dist = Math.abs((bx - ax) * (ay - b.cy) - (ax - b.cx) * (by - ay)) / L;
+          const tproj = ((b.cx - ax) * (bx - ax) + (b.cy - ay) * (by - ay)) / L;
+          const sl = Math.hypot(dist, rh - h) / 3;
+          tri(roofB, [ax, h, ay], [bx, h, by], apex, i % 2 ? rc : rc.clone().multiplyScalar(0.86), [0, 0], [L / 3, 0], [tproj / 3, sl]);
         }
       } else {
-        // Flachdach
         const pts = [];
         for (let i = 0; i < n; i++) pts.push(new THREE.Vector2(p[i * 2], p[i * 2 + 1]));
         let tris = [];
         try { tris = THREE.ShapeUtils.triangulateShape(pts, []); } catch (e) { /* egal */ }
-        const rc = b.c === 4 ? R3.col('#8f9396') : roof;
-        for (const t of tris) tri([pts[t[0]].x, h, pts[t[0]].y], [pts[t[2]].x, h, pts[t[2]].y], [pts[t[1]].x, h, pts[t[1]].y], rc);
+        const fc = b.c === 4 ? R3.col('#8f9396') : rc.clone().multiplyScalar(0.8);
+        for (const t of tris) {
+          const A = pts[t[0]], B = pts[t[2]], C = pts[t[1]];
+          tri(roofB, [A.x, h, A.y], [B.x, h, B.y], [C.x, h, C.y], fc, [A.x / 6, A.y / 6], [B.x / 6, B.y / 6], [C.x / 6, C.y / 6]);
+        }
       }
     }
-    const g = this.track(new THREE.BufferGeometry());
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    g.computeVertexNormals();
-    const m = new THREE.Mesh(g, this.mat({ vertexColors: true, side: THREE.DoubleSide }));
-    m.castShadow = true; m.receiveShadow = true;
-    this.scene.add(m);
+    const mk = (B, map) => {
+      const g = this.track(new THREE.BufferGeometry());
+      g.setAttribute('position', new THREE.Float32BufferAttribute(B.pos, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(B.col, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(B.uv, 2));
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, this.mat({ vertexColors: true, map, side: THREE.DoubleSide }));
+      m.castShadow = true; m.receiveShadow = true;
+      this.scene.add(m);
+    };
+    mk(wall, T.facade); mk(roofB, T.roof);
+    this.buildRoads();
+  }
+
+  // ---------------- Straßen als echte Bänder (scharf auch aus der Nähe) ----------------
+  ribbon(B, flat, w, y, uScale, offset = 0) {
+    const n = flat.length / 2;
+    if (n < 2) return;
+    const P = i => [flat[i * 2], flat[i * 2 + 1]];
+    const norms = [];
+    for (let i = 0; i < n; i++) {
+      const a = P(Math.max(0, i - 1)), b = P(i), c = P(Math.min(n - 1, i + 1));
+      let n1x = 0, n1y = 0;
+      if (i > 0) { const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; n1x += -dy / l; n1y += dx / l; }
+      if (i < n - 1) { const dx = c[0] - b[0], dy = c[1] - b[1], l = Math.hypot(dx, dy) || 1; n1x += -dy / l; n1y += dx / l; }
+      const l = Math.hypot(n1x, n1y) || 1;
+      let nx = n1x / l, ny = n1y / l;
+      // Gehrung begrenzen
+      if (i > 0 && i < n - 1) {
+        const dx = c[0] - b[0], dy = c[1] - b[1], ll = Math.hypot(dx, dy) || 1;
+        const cos = nx * (-dy / ll) + ny * (dx / ll);
+        const f = 1 / Math.max(0.5, cos); nx *= f; ny *= f;
+      }
+      norms.push([nx, ny]);
+    }
+    let u = 0;
+    for (let i = 0; i < n - 1; i++) {
+      const a = P(i), b = P(i + 1), na = norms[i], nb = norms[i + 1];
+      const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const off = (pt, nn, s) => [pt[0] + nn[0] * (offset + s * w / 2), y, pt[1] + nn[1] * (offset + s * w / 2)];
+      const al = off(a, na, 1), ar = off(a, na, -1), bl = off(b, nb, 1), br = off(b, nb, -1);
+      const u0 = u / uScale, u1 = (u + L) / uScale;
+      B.pos.push(...al, ...ar, ...br, ...al, ...br, ...bl);
+      B.uv.push(u0, 1, u0, 0, u1, 0, u0, 1, u1, 0, u1, 1);
+      u += L;
+    }
+  }
+  buildRoads() {
+    const T = this.makeTextures(), W = this.game.world;
+    const L = { side: { pos: [], uv: [] }, foot: { pos: [], uv: [] }, asph: { pos: [], uv: [] }, curb: { pos: [], uv: [] }, line: { pos: [], uv: [] } };
+    const lamps = [];
+    for (const r of W.roads) {
+      if (r.k > 2) continue;
+      if (r.k === 2) { this.ribbon(L.foot, r.p, Math.min(r.w, 5), 0.035, 2.2); continue; }
+      this.ribbon(L.side, r.p, r.w + 3.2, 0.03, 2.2);
+      this.ribbon(L.asph, r.p, r.w, 0.07, 8);
+      this.ribbon(L.curb, r.p, 0.3, 0.1, 2, r.w / 2 + 0.1);
+      this.ribbon(L.curb, r.p, 0.3, 0.1, 2, -r.w / 2 - 0.1);
+      if (r.k === 0) this.ribbon(L.line, r.p, 0.22, 0.085, 6);
+      // Laternen
+      let acc = 12, side = 1;
+      for (let i = 0; i + 3 < r.p.length; i += 2) {
+        const ax = r.p[i], ay = r.p[i + 1], bx = r.p[i + 2], by = r.p[i + 3];
+        const seg = Math.hypot(bx - ax, by - ay); if (!seg) continue;
+        const nx = -(by - ay) / seg, ny = (bx - ax) / seg;
+        for (let d = 30 - acc; d < seg; d += 30) {
+          const x = ax + (bx - ax) * d / seg + nx * side * (r.w / 2 + 1.3), y = ay + (by - ay) * d / seg + ny * side * (r.w / 2 + 1.3);
+          if (x > 2 && y > 2 && x < W.w - 2 && y < W.h - 2 && !W.buildingAt(x, y) && !W.inWater(x, y)) lamps.push([x, y, Math.atan2(-ny * side, -nx * side)]);
+          side = -side;
+        }
+        acc = (acc + seg) % 30;
+      }
+    }
+    const mk = (B, mat, ro) => {
+      if (!B.pos.length) return;
+      const g = this.track(new THREE.BufferGeometry());
+      g.setAttribute('position', new THREE.Float32BufferAttribute(B.pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(B.uv, 2));
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, mat);
+      m.receiveShadow = true; m.renderOrder = ro;
+      this.scene.add(m);
+    };
+    const po = (o, f) => Object.assign(o, { polygonOffset: true, polygonOffsetFactor: f, polygonOffsetUnits: f, side: THREE.DoubleSide });
+    mk(L.foot, this.mat(po({ map: T.foot }, -1)), 1);
+    mk(L.side, this.mat(po({ map: T.sidewalk }, -1)), 1);
+    mk(L.asph, this.mat(po({ map: T.asphalt }, -2)), 2);
+    mk(L.curb, this.mat(po({ color: '#c9c5bc' }, -3)), 3);
+    mk(L.line, this.mat(po({ map: T.dash, transparent: true, alphaTest: 0.3 }, -4)), 4);
+    // Straßenlaternen
+    if (lamps.length) {
+      const pole = new THREE.InstancedMesh(this.track(new THREE.CylinderGeometry(0.09, 0.13, 5.5, 6)), this.mat({ color: '#3c4046' }), lamps.length);
+      const head = new THREE.InstancedMesh(this.track(new THREE.BoxGeometry(1.2, 0.25, 0.45)), this.mat({ color: '#fff6d0', emissive: '#8a7d40' }), lamps.length);
+      const d = this.dummy;
+      lamps.forEach(([x, y, a], i) => {
+        d.position.set(x, 2.75, y); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); d.updateMatrix(); pole.setMatrixAt(i, d.matrix);
+        d.position.set(x + Math.cos(a) * 0.5, 5.5, y + Math.sin(a) * 0.5); d.rotation.set(0, -a, 0); d.updateMatrix(); head.setMatrixAt(i, d.matrix);
+      });
+      pole.castShadow = true;
+      this.scene.add(pole, head);
+    }
   }
   convex(p) {
     const n = p.length / 2; let sign = 0;
@@ -412,15 +580,39 @@ class Renderer3D {
     this.gl.setPixelRatio(dpr);
     this.gl.setSize(innerWidth, innerHeight, false);
     this.camera.aspect = innerWidth / innerHeight;
-    // auf schmalen Hochkant-Bildschirmen weiter weg
-    this.camera.fov = innerWidth < innerHeight ? 58 : 42;
     this.camera.updateProjectionMatrix();
-    const h = innerHeight * dpr;
+    this.updatePointScale();
+  }
+  updatePointScale() {
+    const h = innerHeight * Math.min(window.devicePixelRatio || 1, 1.5);
     this.pNormal.material.uniforms.scale.value = this.pAdd.material.uniforms.scale.value = h / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
   }
-  placeCamera(cx, cy, cz) {
+  placeCamera(cx, cy, cz, dt) {
+    const G = this.game, cam = this.camera;
+    if (G.camMode === 'chase') {
+      // Drohne: knapp hinter und über dem Auto, steigt über Häuser im Weg
+      const yaw = G.camYaw, fx = Math.cos(yaw), fy = Math.sin(yaw);
+      const back = 12.5 / G.zoomMul, up = 5.2 / G.zoomMul;
+      let need = cz + up;
+      for (let s = 0.2; s <= 1.001; s += 0.2) {
+        const b = G.world.buildingAt(cx - fx * back * s, cy - fy * back * s);
+        if (b) need = Math.max(need, b.h + (b.flat ? 2.5 : 6));
+      }
+      this.camH = this.camH == null ? need : this.camH + (need - this.camH) * Math.min(1, (dt || 0.016) * (need > this.camH ? 6 : 2.5));
+      cam.position.set(cx - fx * back, this.camH, cy - fy * back);
+      cam.lookAt(cx + fx * 10, cz + 1.4, cy + fy * 10);
+      if (cam.fov !== 68) { cam.fov = 68; cam.updateProjectionMatrix(); this.updatePointScale(); }
+      cam.updateMatrixWorld();
+      const ax = cx + fx * 45, ay = cy + fy * 45;
+      this.sun.position.set(ax - 85, cz + 150, ay + 55);
+      this.sun.target.position.set(ax, cz, ay);
+      this.sun.target.updateMatrixWorld();
+      return;
+    }
+    this.camH = null;
+    const fov = innerWidth < innerHeight ? 58 : 42;
+    if (cam.fov !== fov) { cam.fov = fov; cam.updateProjectionMatrix(); this.updatePointScale(); }
     const d = this.camDist / this.game.zoomMul;
-    const cam = this.camera;
     cam.position.set(cx, cz + d * Math.sin(this.pitch), cy + d * Math.cos(this.pitch));
     cam.lookAt(cx, cz, cy);
     cam.updateMatrixWorld();
@@ -438,8 +630,11 @@ class Renderer3D {
     const ndc = new THREE.Vector2(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1);
     this.ray.setFromCamera(ndc, this.camera);
     const o = this.ray.ray.origin, d = this.ray.ray.direction;
-    if (Math.abs(d.y) < 1e-4) return { x: o.x, y: o.z };
-    const t = (h - o.y) / d.y;
+    // über dem Horizont: in Blickrichtung weit nach vorne
+    if (d.y > -0.02) { const l = Math.hypot(d.x, d.z) || 1; return { x: o.x + d.x / l * 150, y: o.z + d.z / l * 150 }; }
+    let t = (h - o.y) / d.y;
+    const hor = Math.hypot(d.x * t, d.z * t);
+    if (hor > 150) t *= 150 / hor;
     return { x: o.x + d.x * t, y: o.z + d.z * t };
   }
 
@@ -448,7 +643,7 @@ class Renderer3D {
     const G = this.game;
     const sx = (Math.random() - 0.5) * G.shake * 0.9, sy = (Math.random() - 0.5) * G.shake * 0.9;
     const pz = G.player && G.player.alive ? Math.min(G.player.z, 8) * 0.6 : 0;
-    this.placeCamera(G.cam.x + sx, G.cam.y + sy, pz);
+    this.placeCamera(G.cam.x + sx * (G.camMode === 'chase' ? 0.3 : 1), G.cam.y + sy * (G.camMode === 'chase' ? 0.3 : 1), G.camMode === 'chase' && G.player ? G.player.z : pz, dt);
     // sichtbarer Bereich (für Minikarte)
     const pts = [[0, 0], [innerWidth, 0], [0, innerHeight], [innerWidth, innerHeight]].map(([x, y]) => this.screenToGround(x, y));
     G.viewRect = { x0: Math.min(...pts.map(p => p.x)), y0: Math.min(...pts.map(p => p.y)), x1: Math.max(...pts.map(p => p.x)), y1: Math.max(...pts.map(p => p.y)) };
@@ -470,7 +665,8 @@ class Renderer3D {
       // leichtes Kippen in der Luft
       m.root.rotation.z = c.onGround === false ? clamp(c.vz * 0.02, -0.25, 0.25) : 0;
       m.turret.rotation.y = -(c.turret - c.a);
-      m.face.rotation.y = c.a; m.ring.rotation.z = 0;
+      // Gesicht immer „aufrecht“ zur Kamera
+      m.face.rotation.y = c.a - Math.PI / 2 - (G.camMode === 'chase' ? G.camYaw : -Math.PI / 2);
       const flash = c.flashT > 0;
       if (flash !== m.flashOn) { m.paint.emissive.set(flash ? '#ffffff' : '#000000'); m.flashOn = flash; }
       if (c.flag !== m.lastFlag) {

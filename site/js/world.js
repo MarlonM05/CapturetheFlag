@@ -20,7 +20,7 @@ const COL = {
   stream: '#3f86c9',
 };
 const ROOF = ['#b5533c', '#8e3b2e', '#c96a3f', '#5f9e8a', '#7d8188', '#c9b48a', '#5b6068'];
-const WALL = ['#ece3d2', '#ead5b3', '#dcc6a4', '#f2e9dc', '#d2d9db', '#e8d1c3', '#e2dccb'];
+const WALL = ['#f1e4c8', '#f3d9a4', '#e9c3a0', '#f4efe6', '#cfdde3', '#efc9bb', '#e3e6c8', '#f2dcae', '#d9cfc0', '#f6e2d0', '#e8d6e2', '#d6e3cf'];
 
 const TILE_PX = 512;       // Kachelgröße in Pixeln (Meter = TILE_PX / Zoom)
 const NAV = 1.5;           // Navigationsraster in Metern
