@@ -343,9 +343,11 @@ class World {
     if (this.tiles.size > 90) this.tiles.delete(this.tiles.keys().next().value);
     return t;
   }
-  renderTile(tx, ty, Z) {
-    const TILE = this.tileM;
-    const c = document.createElement('canvas'); c.width = c.height = TILE_PX;
+  // opts.px: Kachelgröße in Pixeln, opts.flat3d: ohne gemalte Schatten/Rampen (für die 3D-Ansicht)
+  renderTile(tx, ty, Z, opts = {}) {
+    const px = opts.px || TILE_PX;
+    const TILE = px / Z;
+    const c = document.createElement('canvas'); c.width = c.height = px;
     const g = c.getContext('2d');
     const x0 = tx * TILE, y0 = ty * TILE, x1 = x0 + TILE, y1 = y0 + TILE;
     g.setTransform(Z, 0, 0, Z, -x0 * Z, -y0 * Z);
@@ -402,9 +404,9 @@ class World {
         if (this.inWater(x, y)) { g.beginPath(); g.moveTo(x - 1.2, y); g.quadraticCurveTo(x, y - 0.6, x + 1.2, y); g.stroke(); }
       }
     }
-    // Schatten der Gebäude (Sonne von links oben)
+    // Schatten der Gebäude (Sonne von links oben) – in 3D macht das die Grafikkarte
     g.fillStyle = 'rgba(20,25,30,0.28)';
-    for (const b of this.buildings) {
+    if (!opts.flat3d) for (const b of this.buildings) {
       if (!vis([b.bb[0], b.bb[1], b.bb[2] + b.h * 0.5, b.bb[3] + b.h * 0.6])) continue;
       const ox = Math.min(8, b.h * 0.32), oy = Math.min(9, b.h * 0.38);
       path(b.p, true); g.fill();
@@ -418,11 +420,11 @@ class World {
       g.fill();
     }
     // Baumschatten
-    for (const t of this.trees) if (vis([t.x - 5, t.y - 5, t.x + 8, t.y + 8])) {
+    if (!opts.flat3d) for (const t of this.trees) if (vis([t.x - 5, t.y - 5, t.x + 8, t.y + 8])) {
       g.beginPath(); g.arc(t.x + 2.2, t.y + 2.6, t.r, 0, 7); g.fill();
     }
     // Rampen
-    for (const r of this.ramps) if (vis([r.x - 6, r.y - 6, r.x + 6, r.y + 6])) drawRamp(g, r);
+    if (!opts.flat3d) for (const r of this.ramps) if (vis([r.x - 6, r.y - 6, r.x + 6, r.y + 6])) drawRamp(g, r);
     // Basen
     this.bases.forEach((b, i) => {
       if (!vis([b.x - 14, b.y - 14, b.x + 14, b.y + 14])) return;
@@ -461,6 +463,7 @@ class World {
       const g = t.getContext('2d');
       g.setTransform(Z, 0, 0, Z, -tx * TILE * Z, -ty * TILE * Z);
       fn(g);
+      if (this.onDecal) this.onDecal(tx, ty);
     }
   }
   // Minikarte

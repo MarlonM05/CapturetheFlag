@@ -4,27 +4,36 @@ Ein Browser-Autospiel im Capture-the-Flag-Stil: zwei Teams, Springen, Turbo, Min
 gespielt auf echten Stadtplänen von **Ravensburg** (Altstadt & Marienplatz), **Weingarten**
 (Basilika) und **Friedrichshafen** (Hafen & Bodensee).
 
-## Spielen
-- `site/index.html` öffnen (oder `python3 -m http.server` im Ordner `site` starten).
-- Online stellen, Variante 1: `schussental-showdown-netlify.zip` auf <https://app.netlify.com/drop> ziehen – fertig.
-- Online stellen, Variante 2: Auf Netlify „Add new site → Import from Git“ und dieses Repository wählen.
-  Die `netlify.toml` sagt Netlify, dass das Spiel im Ordner `site/` liegt. Jede Änderung hier geht dann automatisch online.
+## Spielen & online stellen
+**Variante A – GitHub Pages (wie Make-It-Meme):**
+1. Repository auf **öffentlich** stellen (Settings → General → ganz unten „Change visibility“). GitHub Pages ist im Gratis-Tarif nur für öffentliche Repositories verfügbar.
+2. Settings → Pages → Build and deployment → Source: **GitHub Actions**.
+3. Nach 1–2 Minuten läuft das Spiel unter `https://marlonm05.github.io/CapturetheFlag/`. Jede Änderung auf `main` wird automatisch veröffentlicht.
+
+**Variante B – Netlify:** `schussental-showdown-netlify.zip` auf <https://app.netlify.com/drop> ziehen oder das Repo per „Import from Git“ verbinden.
+Wichtig: Unter *Site configuration → Access & security → Visitor access* muss der Seitenschutz **aus** sein, sonst sehen Freunde nur eine Netlify-Anmeldeseite.
+
+Lokal: im Ordner `site` `python3 -m http.server` starten und `http://localhost:8000` öffnen.
 
 ## Online mit Freunden
-1. Spiel auf Netlify hochladen (siehe oben) und die Seite öffnen.
-2. **🌐 Online mit Freunden → Raum erstellen** – du bekommst einen 5-stelligen Code.
-3. **🔗 Link kopieren** und an die anderen schicken (oder sie geben den Code unter „Raum beitreten“ ein).
-4. Teams in der Lobby einteilen, Stadt wählen, **Match starten**. Freie Plätze füllen Bots auf (bis 12 Menschen).
+1. **🌐 Online mit Freunden → Raum erstellen** – du bekommst einen 5-stelligen Code.
+2. **🔗 Link kopieren** und verschicken (oder die anderen geben den Code unter „Raum beitreten“ ein).
+3. Teams einteilen, Stadt wählen, **Match starten**. Freie Plätze füllen Bots auf (bis 12 Menschen).
 
-Technik: WebRTC über [PeerJS](https://peerjs.com) (MIT-Lizenz, liegt in `site/js/vendor/`). Der kostenlose
-PeerJS-Vermittlungsserver stellt nur die Verbindung her, danach läuft alles direkt zwischen den Geräten.
-Der Host simuliert das Spiel und sendet 20× pro Sekunde den Zustand, die Mitspieler senden ihre Eingaben
-und sagen ihr eigenes Auto lokal voraus (fühlt sich ohne Verzögerung an).
+Technik (wie Make-It-Meme): Räume, Codes und Lobby laufen über **Supabase Realtime** (Projekt „giffig“,
+öffentlicher Browser-Schlüssel in `site/js/net.js`). Das Fahren läuft danach über eine **direkte WebRTC-Verbindung**
+zwischen Host und Mitspielern (flüssig, ~20 Updates/s). Klappt die direkte Verbindung nicht (strenges WLAN, Mobilfunk),
+leitet Supabase die Daten automatisch mit ~10 Updates/s weiter. In der Lobby steht bei jedem Spieler 🟢 *direkt* oder 🟡 *über Server*.
 
 Hinweise:
-- Der Host muss den Tab offen und im Vordergrund lassen, sonst bremst der Browser das Spiel.
+- Der Host muss den Tab offen und im Vordergrund lassen.
 - Verlässt jemand das Match, übernimmt ein Bot sein Auto.
-- In sehr strengen Netzwerken (manche Firmen-/Schul-WLANs) kann WebRTC blockiert sein – dann über mobiles Netz oder ein anderes WLAN probieren.
+- Supabase-Gratisprojekte werden nach einer Woche ohne Nutzung pausiert → im Supabase-Dashboard „Restore“ klicken.
+- Gratis-Limit: 2 Mio. Realtime-Nachrichten/Monat. Direkte Verbindungen verbrauchen davon fast nichts.
+
+## Grafik
+Standardmäßig **3D** mit Three.js: echte Häuser aus OpenStreetMap mit Sattel-/Walmdächern, Schatten, 3D-Autos,
+Bäume, Rampen und Flaggen. Für schwache Geräte lässt sich im Hauptmenü „3D-Grafik“ abschalten (klassische 2D-Ansicht).
 
 ## Inhalt
 | Ordner | Was |
@@ -32,7 +41,9 @@ Hinweise:
 | `site/` | Das komplette Spiel (HTML/CSS/JS, keine Abhängigkeiten) |
 | `site/js/maps.js` | Kartendaten, generiert aus OpenStreetMap |
 | `site/img/fahrer/` | Fahrer-Porträts aus dem Drive-Ordner „Fette Bilder“ |
-| `site/js/net.js` | Online-Modus (Räume, Lobby, Netzwerk) |
+| `site/js/net.js` | Online-Modus (Supabase-Räume + WebRTC) |
+| `site/js/render3d.js` | 3D-Ansicht (Three.js) |
+| `site/js/vendor/` | Three.js r149 und supabase-js 2.118 (beide MIT-Lizenz) |
 | `tools/build_maps.py` | Erzeugt `maps.js` aus OSM-Exporten (`pip install shapely scipy numpy pillow`) |
 
 ## Autos

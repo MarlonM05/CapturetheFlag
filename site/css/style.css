@@ -11,7 +11,8 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
-canvas#game { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; }
+canvas#game3d { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; z-index: 0; }
+canvas#game { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; z-index: 1; background: transparent; }
 .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; overflow-y: auto; z-index: 5; }
 .screen.hidden { display: none; }
 .screen.overlay { background: rgba(8, 10, 14, 0.55); backdrop-filter: blur(3px); z-index: 10; }

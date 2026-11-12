@@ -214,6 +214,14 @@ class Game {
     this.byId = new Map(this.cars.map(c => [c.id, c]));
     this.player = this.cars.find(c => c.key === me) || this.cars[0];
     this.cam.x = this.player.x; this.cam.y = this.player.y;
+    // 3D-Ansicht (Three.js), sonst klassisch 2D
+    const c3 = document.getElementById('game3d');
+    this.r3d = null;
+    if (opts.three !== false && typeof R3 !== 'undefined' && R3.supported() && c3) {
+      try { this.r3d = new Renderer3D(this, c3); } catch (e) { console.error(e); this.r3d = null; }
+    }
+    if (!this.r3d && c3) c3.style.display = 'none';
+    this.viewRect = { x0: 0, y0: 0, x1: 1, y1: 1 };
     this.resize();
     this._onResize = () => this.resize();
     addEventListener('resize', this._onResize);
@@ -245,6 +253,7 @@ class Game {
   }
   destroy() {
     this.running = false;
+    if (this.r3d) { this.r3d.dispose(); this.r3d = null; }
     removeEventListener('resize', this._onResize);
     Sound.engineStop();
   }
@@ -254,6 +263,7 @@ class Game {
     this.hud = clamp(Math.min(innerWidth, innerHeight) / 720, 0.6, 1);
     this.canvas.width = Math.round(innerWidth * dpr); this.canvas.height = Math.round(innerHeight * dpr);
     this.canvas.style.width = innerWidth + 'px'; this.canvas.style.height = innerHeight + 'px';
+    if (this.r3d) this.r3d.resize();
     this.updateZoom();
   }
   updateZoom() {
@@ -374,6 +384,7 @@ class Game {
   }
 
   screenToWorld(sx, sy) {
+    if (this.r3d) return this.r3d.screenToGround(sx, sy, (this.player ? this.player.z : 0) + 1);
     const Z = this.Z / this.dpr;
     return { x: this.cam.x + (sx - innerWidth / 2) / Z, y: this.cam.y + (sy - innerHeight / 2) / Z };
   }
@@ -1193,6 +1204,31 @@ class Game {
 
   // ---------------- Darstellung ----------------
   render(dt) {
+    if (this.r3d) return this.render3D(dt);
+    this.render2D(dt);
+  }
+  render3D(dt) {
+    this.frameNo = (this.frameNo || 0) + 1;
+    const time = performance.now() / 1000;
+    this.camR = { x: this.cam.x, y: this.cam.y };
+    this.r3d.render(dt, time);
+    const g = this.g;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    // schwebende Texte (+100 Kohle)
+    const D = this.dpr;
+    g.textAlign = 'center'; g.font = `800 ${15 * D}px system-ui, sans-serif`; g.lineWidth = 3 * D; g.strokeStyle = 'rgba(0,0,0,0.7)';
+    for (const p of this.particles.list) {
+      if (p.type !== 'text') continue;
+      const s = this.worldToScreen(p.x, p.y, 3 + (1.6 - p.life) * 2);
+      g.globalAlpha = clamp(p.life / p.max, 0, 1); g.fillStyle = p.color;
+      g.strokeText(p.text, s.x, s.y); g.fillText(p.text, s.x, s.y);
+    }
+    g.globalAlpha = 1;
+    this.drawTags(g, 0, 0);
+    if (!this.demo) this.drawHUD(g, 0, 0, time);
+  }
+  render2D(dt) {
     this.frameNo = (this.frameNo || 0) + 1;
     const g = this.g, cv = this.canvas, Z = this.Z, W = this.world;
     const SW = cv.width, SH = cv.height;
@@ -1201,6 +1237,7 @@ class Game {
     this.camR = { x: cx, y: cy };
     const vw = SW / Z, vh = SH / Z;
     const left = cx - vw / 2, top = cy - vh / 2;
+    this.viewRect = { x0: left, y0: top, x1: left + vw, y1: top + vh };
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.fillStyle = COL.outside; g.fillRect(0, 0, SW, SH);
     // Kacheln
@@ -1483,6 +1520,7 @@ class Game {
     }
   }
   worldToScreen(x, y, z = 0) {
+    if (this.r3d) return this.r3d.project(x, y, z);
     const cx = this.camR.x, cy = this.camR.y, k = CAM_H / (CAM_H - z);
     const px = cx + (x - cx) * k, py = cy + (y - cy) * k;
     return { x: (px - cx) * this.Z + this.canvas.width / 2, y: (py - cy) * this.Z + this.canvas.height / 2 };
@@ -1553,7 +1591,7 @@ class Game {
     g.fillStyle = 'rgba(255,255,255,0.5)'; g.font = `500 ${10 * D}px system-ui, sans-serif`;
     let info = this.map.name + ' – ' + this.map.sub;
     if (this.isHost) info += '  ·  🌐 Host';
-    if (this.isClient) info += `  ·  🌐 Ping ${Math.round(this.rtt * 1000)} ms`;
+    if (this.isClient) info += `  ·  🌐 ${typeof Net !== 'undefined' && Net.linkMode === 'relay' ? 'über Server' : 'direkt'} · Ping ${Math.round(this.rtt * 1000)} ms`;
     g.fillText(info, 12 * D, 52 * D);
     // Spieler-Panel unten links
     const px = 12 * D, py = SH - 92 * D;
@@ -1619,7 +1657,8 @@ class Game {
     const sc = mw / this.world.w;
     // Sichtfeld
     g.strokeStyle = 'rgba(255,255,255,0.5)'; g.lineWidth = 1 * D;
-    g.strokeRect(mx + left * sc, my + top * sc, (SW / this.Z) * sc, (SH / this.Z) * sc);
+    const vr = this.viewRect;
+    g.strokeRect(mx + clamp(vr.x0, 0, this.world.w) * sc, my + clamp(vr.y0, 0, this.world.h) * sc, (clamp(vr.x1, 0, this.world.w) - clamp(vr.x0, 0, this.world.w)) * sc, (clamp(vr.y1, 0, this.world.h) - clamp(vr.y0, 0, this.world.h)) * sc);
     for (let i = 0; i < 2; i++) {
       const b = this.world.bases[i];
       g.fillStyle = TEAM[i].color + '88'; g.beginPath(); g.arc(mx + b.x * sc, my + b.y * sc, 6 * D, 0, 7); g.fill();

@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+  <canvas id="game3d"></canvas>
   <canvas id="game"></canvas>
 
   <!-- Hauptmenü -->
@@ -32,6 +33,7 @@
       <div class="menu-foot">
         <label class="chk"><input type="checkbox" id="opt-sound" checked> Sound</label>
         <label class="chk"><input type="checkbox" id="opt-aim"> Zielhilfe</label>
+        <label class="chk"><input type="checkbox" id="opt-3d" checked> 3D-Grafik</label>
         <span class="credits">Karten: © OpenStreetMap-Mitwirkende (ODbL)</span>
       </div>
     </div>
@@ -60,7 +62,7 @@
   <section id="scr-online" class="screen hidden">
     <div class="panel">
       <header><button class="btn back" data-go="menu">←</button><h2>Online spielen</h2></header>
-      <p class="hint">Einer erstellt einen Raum und schickt den Code oder Link an die anderen. Kein Konto nötig – alle brauchen nur diese Webseite.</p>
+      <p class="hint">Einer erstellt einen Raum und schickt den Code oder Link an die anderen. Kein Konto nötig – alle brauchen nur diese Webseite. Funktioniert wie bei Make-It-Meme über einen Online-Raum.</p>
       <div class="online-grid">
         <div class="help-box">
           <h3>🏠 Raum erstellen</h3>
@@ -206,11 +208,13 @@
 
   <div id="loading" class="screen"><div class="loader">Lade Oberschwaben …</div></div>
 
-  <script src="js/vendor/peerjs.min.js"></script>
+  <script src="js/vendor/supabase.js"></script>
+  <script src="js/vendor/three.min.js"></script>
   <script src="js/data.js"></script>
   <script src="js/maps.js"></script>
   <script src="js/audio.js"></script>
   <script src="js/world.js"></script>
+  <script src="js/render3d.js"></script>
   <script src="js/game.js"></script>
   <script src="js/net.js"></script>
   <script src="js/ui.js"></script>

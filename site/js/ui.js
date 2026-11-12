@@ -10,7 +10,7 @@ const DEFAULT_SAVE = {
   up: {},
   car: 'flitzer',
   driver: 'marlon',
-  settings: { sound: true, autoAim: false, size: 4, diff: 1, caps: 3, time: 480, map: 'ravensburg' },
+  settings: { sound: true, autoAim: false, gfx3d: true, size: 4, diff: 1, caps: 3, time: 480, map: 'ravensburg' },
   stats: { games: 0, wins: 0, kills: 0, caps: 0 },
 };
 let save = loadSave();
@@ -52,7 +52,7 @@ function startDemo() {
   if (demo || game) return;
   Sound.quiet = true;
   const map = pick(MAPS).id;
-  demo = new Game(canvas, { demo: true, mapId: map, teamSize: 4, difficulty: 1, capLimit: 3, timeLimit: 300, car: pick(CARS).id, driver: pick(DRIVERS).id, upgrades: {} });
+  demo = new Game(canvas, { demo: true, three: save.settings.gfx3d !== false, mapId: map, teamSize: 4, difficulty: 1, capLimit: 3, timeLimit: 300, car: pick(CARS).id, driver: pick(DRIVERS).id, upgrades: {} });
   demo.onEnd = () => { stopDemo(); if (!game) startDemo(); };
 }
 function stopDemo() { if (demo) { demo.destroy(); demo = null; } Sound.quiet = false; }
@@ -63,6 +63,7 @@ function renderMenu() {
   $('#me-card').innerHTML = `<img src="img/fahrer/${d.id}.jpg" alt=""><div><div class="nm">${d.name}</div><div class="sub">${car.name} · ${save.stats.wins} Siege · ${save.stats.kills} Abschüsse</div></div><div class="coins">💰 ${fmt(save.coins)}</div>`;
   $('#opt-sound').checked = save.settings.sound;
   $('#opt-aim').checked = save.settings.autoAim;
+  $('#opt-3d').checked = save.settings.gfx3d !== false;
 }
 
 // ---------------- Setup ----------------
@@ -129,6 +130,7 @@ function matchOpts() {
   const S = save.settings;
   return {
     mapId: S.map, teamSize: S.size, difficulty: S.diff, capLimit: S.caps, timeLimit: S.time,
+    three: save.settings.gfx3d !== false,
     car: save.car, driver: save.driver, upgrades: save.up[save.car] || {}, autoAim: S.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0),
   };
 }
@@ -267,6 +269,7 @@ $('#btn-end-garage').onclick = () => { if (game) { game.destroy(); game = null; 
 $('#btn-end-menu').onclick = () => quitToMenu();
 $('#opt-sound').onchange = e => { save.settings.sound = e.target.checked; Sound.setMuted(!e.target.checked); writeSave(); };
 $('#opt-aim').onchange = e => { save.settings.autoAim = e.target.checked; writeSave(); };
+$('#opt-3d').onchange = e => { save.settings.gfx3d = e.target.checked; writeSave(); stopDemo(); startDemo(); };
 
 function togglePause(v) {
   if (!game || game.state === 'over') return;
@@ -294,7 +297,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && gam
 // ---------------- Online ----------------
 function netStatus(t, err) { const el = $('#net-status'); if (!el) return; el.textContent = t || ''; el.classList.toggle('err', !!err); }
 function renderOnline() {
-  netStatus(Net.available() ? '' : 'Online-Modul konnte nicht geladen werden.', !Net.available());
+  netStatus(Net.available() ? '' : 'Online-Modul konnte nicht geladen werden. Internetverbindung prüfen und Seite neu laden.', !Net.available());
 }
 function roomLink() { return location.origin + location.pathname + '?raum=' + Net.code; }
 const SEGS = {
@@ -326,7 +329,8 @@ function renderLobby() {
       const mine = p.pid === Net.myId;
       const row = document.createElement('div');
       row.className = 'pl' + (mine ? ' me' : '');
-      row.innerHTML = `<img src="img/fahrer/${d.id}.jpg" alt=""><div><div class="pn">${d.name}${p.pid === 'host' ? ' 👑' : ''}${mine ? ' (Du)' : ''}</div><div class="pc">${car.name}</div></div>`;
+      const link = p.pid === 'host' ? '👑 Host' : p.link === 'rtc' ? '🟢 direkt verbunden' : p.link === 'relay' ? '🟡 über Server' : '⏳ verbindet …';
+      row.innerHTML = `<img src="img/fahrer/${d.id}.jpg" alt=""><div><div class="pn">${d.name}${mine ? ' (Du)' : ''}</div><div class="pc">${car.name} · ${link}</div></div>`;
       if (mine || isHost) {
         const b = document.createElement('button'); b.className = 'btn'; b.textContent = t ? '← Rot' : 'Blau →';
         b.onclick = () => { Sound.play('click'); Net.setTeam(p.pid, t ? 0 : 1); };
@@ -348,6 +352,7 @@ Net.onError = msg => {
   toast(msg);
 };
 Net.onStart = opts => {
+  opts.three = save.settings.gfx3d !== false;
   opts.autoAim = save.settings.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
   startMatch(opts);
 };
@@ -381,6 +386,7 @@ $('#btn-lobby-leave').onclick = () => { Net.leave(); show('online'); };
 $('#btn-lobby-start').onclick = () => {
   if (Net.role !== 'host') return;
   const opts = Net.startMatch();
+  opts.three = save.settings.gfx3d !== false;
   opts.autoAim = save.settings.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
   startMatch(opts);
 };
