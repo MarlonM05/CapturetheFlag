@@ -39,6 +39,8 @@ Hinweise:
 - **Dächer-Hüpfen:** höhere Sprünge; Sprung + Nitro steigt bis gut 20 m und trägt über Häuser. Auf Satteldächern landet man auf den Ziegeln.
 - **Nitro laden:** schneller als vorher, Bonus beim Driften (`Q`), in der Luft und für jeden sauberen Salto.
 - **Minikarte (unten rechts):** großer Ausschnitt um dich, helle Straßen, dunkle Häuser, Basen R/B, Flaggen (getragene Flagge mit pulsierendem Ring), Pfeile für dich, Team und Gegner in der Nähe.
+- **Sprünge:** nur noch ~0,5 s Abklingzeit, dazu ein Doppelsprung in der Luft (Leertaste erneut drücken).
+- **Zielen in 3D:** Turm und Geschosse folgen dem Fadenkreuz auch nach oben und unten (Ziele auf Dächern, in der Luft, unter Brücken); das Fadenkreuz wird rot, wenn ein Gegner darunter ist, und zeigt den Höhenwinkel an.
 - **Saltos:** in der Luft `W`/`S` + `Shift` → Vorwärts-/Rückwärtssalto (360°). Kurz vor dem Boden richtet sich das Auto leicht auf; saubere Landung = +25 XP pro Salto, schiefe Landung bremst und kostet etwas Panzerung.
 - **Schussen-Schanzen:** breite gelbe Schanzen direkt vor dem Fluss (neben den Brücken) – mit Anlauf quer über das Wasser springen.
 - **XP im Match:** Abschuss 100, Assist 40, Flagge klauen 50, Rettung 60, Punkt 300. Alle 200 XP ein Upgrade für die laufende Runde:

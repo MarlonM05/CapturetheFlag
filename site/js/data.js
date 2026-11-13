@@ -93,7 +93,7 @@ function carStats(car, lv, ups) {
     boost: (b.boost + p.boost * t) * 1.5,
     boostRegen: 0.5 + 0.06 * t,
     jump: (b.jump + p.jump * s) * 1.5,   // hoch genug, um mit Nitro über Dächer zu springen
-    jumpCd: Math.max(0.9, 2.2 - 0.25 * s),
+    jumpCd: Math.max(0.35, 0.55 - 0.04 * s),   // schnell wieder springen
   };
 }
 

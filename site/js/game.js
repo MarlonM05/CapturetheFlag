@@ -500,6 +500,7 @@ class Game {
           else { inp.steer = clamp(diff * 2.2, -1, 1); inp.thr = mag * (Math.abs(diff) > 1.6 ? 0.4 : 1); }
         }
       }
+      inp.pitch = 0;
       if (T.aim) {
         const dx = T.aim.x - T.aim.ox, dy = T.aim.y - T.aim.oy;
         if (Math.hypot(dx, dy) > 10) { inp.aim = this.camMode === 'chase' ? this.camYaw + Math.atan2(dx, -dy) : Math.atan2(dy, dx); inp.fire = Math.hypot(dx, dy) > 28; inp.manualAim = true; }
@@ -516,7 +517,15 @@ class Game {
     inp.mine = !!(K.KeyE || Input.mouse.right);
     inp.drift = !!(K.KeyQ || K.KeyX);
     inp.fire = Input.mouse.down || !!K.KeyF || !!K.Enter;
-    if (Input.mouse.moved) {
+    inp.pitch = 0;
+    if (Input.mouse.moved && this.r3d) {
+      // Strahl durch das Fadenkreuz: trifft Auto, Hauswand, Boden oder Himmel -> Seiten- und Höhenwinkel
+      const ap = this.r3d.aimPoint(Input.mouse.x, Input.mouse.y, c);
+      inp.aim = Math.atan2(ap.y - c.y, ap.x - c.x);
+      const dz = ap.z - (c.z + 1.1), hd = Math.max(1, Math.hypot(ap.x - c.x, ap.y - c.y));
+      inp.pitch = ap.kind === 'ground' && Math.abs(dz) < 2.5 ? 0 : clamp(Math.atan2(dz, hd), -0.6, 0.9);
+      this.aimLock = ap.car || null;
+    } else if (Input.mouse.moved) {
       const mw = this.screenToWorld(Input.mouse.x, Input.mouse.y);
       inp.aim = Math.atan2(mw.y - c.y, mw.x - c.x);
     } else inp.aim = c.a;
@@ -527,6 +536,8 @@ class Game {
     if (t) {
       const tt = Math.sqrt(d2(c.x, c.y, t.x, t.y)) / c.w.speed;
       c.input.aim = Math.atan2(t.y + t.vy * tt - c.y, t.x + t.vx * tt - c.x);
+      const dz = (t.z + 0.9) - (c.z + 1.1);
+      c.input.pitch = Math.abs(dz) > 1.8 ? clamp(Math.atan2(dz, Math.max(1, tt * c.w.speed)), -0.6, 0.9) : 0;
       if (alsoFire && Input.touch.active && !c.input.manualAim) c.input.fire = true;
     } else if (alsoFire && Input.touch.active && !c.input.manualAim) { c.input.fire = false; c.input.aim = c.a; }
   }
@@ -552,6 +563,7 @@ class Game {
     const steer = c.steerS;
     c.protect = Math.max(0, c.protect - dt); c.flashT = Math.max(0, c.flashT - dt);
     c.jumpCd = Math.max(0, c.jumpCd - dt); c.rampCd = Math.max(0, c.rampCd - dt);
+    if (!inp.jump) c.jumpHeld = false;
     // Boden: Gelände, Tunnelboden, Brücke oder Dach
     c.groundZ = W.groundAt(c.x, c.y, c.z);
     c.groundKind = W.groundKind;
@@ -612,8 +624,9 @@ class Game {
         this.particles.add({ x: c.x - fx * c.def.len * 0.55, y: c.y - fy * c.def.len * 0.55, vx: -fx * 10 + rand(-2, 2), vy: -fy * 10 + rand(-2, 2), life: 0.25, max: 0.25, size: 0.6, grow: -1.5, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffffff', add: true });
       }
       // Sprung
+      c.airJumps = c.bot ? 0 : 1;
       if (playing && inp.jump && c.jumpCd <= 0) {
-        c.vz = Math.max(0, surfVz) + st.jump; c.jumpCd = st.jumpCd; c.onGround = false;
+        c.vz = Math.max(0, surfVz) + st.jump; c.jumpCd = st.jumpCd; c.onGround = false; c.jumpHeld = true;
         Sound.play('jump', this.vol(c.x, c.y));
         for (let i = 0; i < 10; i++) this.particles.add({ x: c.x, y: c.y, vx: rand(-6, 6), vy: rand(-6, 6), life: 0.5, max: 0.5, size: 0.7, grow: 2, color: '#d7d0c0', alpha: 0.5, drag: 4 });
       }
@@ -622,6 +635,12 @@ class Game {
       else c.lastSkid = null;
     } else {
       c.drifting = false;
+      // Doppelsprung: Taste in der Luft erneut drücken
+      if (playing && inp.jump && !c.jumpHeld && c.airJumps > 0 && c.jumpCd <= 0) {
+        c.airJumps--; c.vz = Math.max(c.vz, 0) + st.jump * 0.8; c.jumpCd = st.jumpCd;
+        Sound.play('jump', this.vol(c.x, c.y));
+        for (let i = 0; i < 8; i++) this.particles.add({ x: c.x, y: c.y, zAbs: c.z + 0.3, vz: -3, vx: rand(-5, 5), vy: rand(-5, 5), life: 0.4, max: 0.4, size: 0.6, grow: 2, color: '#bfe8ff', alpha: 0.6, add: true });
+      }
       // Saltos: W/S + Nitro dreht nach vorne/hinten, W/S allein neigt nur leicht; kurz vor dem Boden richtet sich das Auto auf
       const hgt = c.z - c.groundZ, nearGround = hgt < 3.5 && c.vz < 0;
       const up = Math.round((c.pitch || 0) / (Math.PI * 2)) * Math.PI * 2;
@@ -894,6 +913,8 @@ class Game {
     const turnRate = c.human ? 40 : 7;
     const diff = angNorm(inp.aim - c.turret);
     c.turret += clamp(diff, -turnRate * dt, turnRate * dt);
+    const pw = clamp(inp.pitch || 0, -0.6, 0.9);
+    c.tpitch = (c.tpitch || 0) + clamp(pw - (c.tpitch || 0), -turnRate * 0.5 * dt, turnRate * 0.5 * dt);
     c.fireCd -= dt;
     if (inp.fire && c.fireCd <= 0 && c.alive) {
       c.fireCd = 1 / c.st.rate;
@@ -906,15 +927,17 @@ class Game {
     const px = c.x + Math.cos(c.a) * sh.turret, py = c.y + Math.sin(c.a) * sh.turret;
     const bl = w === WEAPONS.cannon ? 3 : 2;
     const mx = px + Math.cos(c.turret) * bl, my = py + Math.sin(c.turret) * bl;
+    const pt = c.tpitch || 0, cp = Math.cos(pt);
     for (let i = 0; i < w.count; i++) {
       const ang = c.turret + (Math.random() - 0.5) * 2 * w.spread;
       const sp = w.speed * (w.count > 1 ? rand(0.85, 1.1) : 1);
       const bl = {
-        x: mx, y: my, z: c.z + 1.1, vx: Math.cos(ang) * sp + c.vx * 0.35, vy: Math.sin(ang) * sp + c.vy * 0.35,
+        x: mx, y: my, z: c.z + 1.1 + Math.sin(pt) * 1.2, vz: Math.abs(pt) > 0.03 ? Math.sin(pt + (Math.random() - 0.5) * w.spread) * sp : 0,
+        vx: Math.cos(ang) * sp * cp + c.vx * 0.35, vy: Math.sin(ang) * sp * cp + c.vy * 0.35,
         life: w.life * (w.count > 1 ? rand(0.8, 1.1) : 1), dmg: c.st.dmg, owner: c, team: c.team, w, cosmetic: this.isClient,
       };
       this.bullets.push(bl);
-      if (this.isHost) this.events.push(['s', c.id, r2(bl.x), r2(bl.y), r2(bl.z), r1(bl.vx), r1(bl.vy), r2(bl.life), c.def.weapon]);
+      if (this.isHost) this.events.push(['s', c.id, r2(bl.x), r2(bl.y), r2(bl.z), r1(bl.vx), r1(bl.vy), r2(bl.life), c.def.weapon, r1(bl.vz)]);
     }
     Sound.play(w.sound, this.vol(c.x, c.y) * (c.isPlayer ? 1 : 0.7));
     this.particles.add({ x: mx, y: my, vx: c.vx, vy: c.vy, life: 0.06, max: 0.06, size: w.splash ? 1.4 : 0.7, color: '#ffe9a8', add: true });
@@ -951,7 +974,15 @@ class Game {
       if (b.w === WEAPONS.cannon) b.z -= dt * 0.4;
       // flache Hänge: Geschoss folgt dem Boden, steile Hänge/Wände treffen
       const gb = W.groundAt(b.x, b.y, b.z);
-      if (b.z < gb + 0.35 && gb - (b.gPrev === undefined ? gb : b.gPrev) < 1.0) b.z = gb + 0.5;
+      if (b.vz) {
+        b.z += b.vz * dt;
+        if (b.z < gb + 0.1) {   // schräg nach unten: schlägt am Boden ein
+          b.z = gb + 0.2;
+          if (b.w.splash) this.explode(b);
+          else this.particles.add({ type: 'spark', x: b.x, y: b.y, zAbs: b.z, vx: rand(-5, 5), vy: rand(-5, 5), life: 0.18, max: 0.18, size: 0.12, color: '#ffe8a0', add: true });
+          this.bullets[i] = this.bullets[this.bullets.length - 1]; this.bullets.pop(); continue;
+        }
+      } else if (b.z < gb + 0.35 && gb - (b.gPrev === undefined ? gb : b.gPrev) < 1.0) b.z = gb + 0.5;
       b.gPrev = gb;
       // Autos
       for (const c of this.cars) {
@@ -1195,7 +1226,7 @@ class Game {
       t: 's', n: this.netSeq, st: this.state, tm: r1(this.time), ct: r2(this.countT), sc: this.score,
       c: this.cars.map(c => [c.id, r2(c.x), r2(c.y), r2(c.a), r2(c.turret), r2(c.z), r1(c.vx), r1(c.vy), Math.ceil(c.hp), c.alive ? 1 : 0, c.flag,
         c.boosting ? 1 : 0, c.protect > 0 ? 1 : 0, r1(c.respawnT), c.kills, c.deaths, c.caps, c.returns, c.score, c.earned, c.mines, r2(c.boost),
-        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg, r2(c.pitch || 0)]),
+        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg, r2(c.pitch || 0), r2(c.tpitch || 0)]),
       f: this.flags.map(f => [f.state, r1(f.x), r1(f.y), f.carrier ? f.carrier.id : 0, r1(f.dropT), r1(f.z)]),
       pr: this.props.map(p => (p.alive ? 1 : 0)).join(''),
       pk: this.pickups.map(p => [r1(p.x), r1(p.y), p.t, p.active ? 1 : 0]),
@@ -1214,7 +1245,7 @@ class Game {
     if (d.t !== 'st') return;
     const num = (v, a, b) => { v = +v; return Number.isFinite(v) ? clamp(v, a, b) : 0; };
     const i = c.input;
-    i.aim = num(d.tu, -10, 10); i.fire = !!d.f; i.mine = !!d.m; i.boost = !!d.b; i.thr = 0; i.steer = 0;
+    i.aim = num(d.tu, -10, 10); i.pitch = num(d.tp, -1, 1); i.fire = !!d.f; i.mine = !!d.m; i.boost = !!d.b; i.thr = 0; i.steer = 0;
     if (!c.alive || d.l !== c.life) return;
     const old = c.rs;
     c.rs = {
@@ -1241,7 +1272,7 @@ class Game {
     if (this.sendT % every === 0 && typeof Net !== 'undefined' && me.alive) {
       const i = me.input;
       Net.send({ t: 'st', l: me.life, x: r2(me.x), y: r2(me.y), a: r2(me.a), vx: r1(me.vx), vy: r1(me.vy), z: r2(me.z), vz: r1(me.vz),
-        tu: r2(i.aim), f: i.fire ? 1 : 0, m: i.mine ? 1 : 0, b: me.boosting ? 1 : 0, w: me.sunk ? 1 : 0, cd: r1(me.crashAcc), p: r2(me.pitch || 0) });
+        tu: r2(i.aim), tp: r2(i.pitch || 0), f: i.fire ? 1 : 0, m: i.mine ? 1 : 0, b: me.boosting ? 1 : 0, w: me.sunk ? 1 : 0, cd: r1(me.crashAcc), p: r2(me.pitch || 0) });
       me.crashAcc = 0;
     }
     // eigenes Auto lokal vorhersagen
@@ -1320,7 +1351,7 @@ class Game {
       } else {
         c.net = { x: a[1], y: a[2], a: a[3], tu: a[4], z: a[5], vx: a[6], vy: a[7], t: now };
         if (!wasAlive && c.alive) { c.x = a[1]; c.y = a[2]; c.a = a[3]; c.turret = a[4]; c.z = a[5]; }
-        c.vx = a[6]; c.vy = a[7]; c.boosting = !!a[11]; c.pitch = a[28] || 0;
+        c.vx = a[6]; c.vy = a[7]; c.boosting = !!a[11]; c.pitch = a[28] || 0; c.tpitch = a[29] || 0;
       }
     }
     s.f.forEach((a, i) => { const f = this.flags[i]; f.state = a[0]; f.x = a[1]; f.y = a[2]; f.carrier = a[3] ? this.byId.get(a[3]) : null; f.dropT = a[4]; f.z = a[5] !== undefined ? a[5] : this.world.terrain(f.x, f.y); });
@@ -1342,7 +1373,7 @@ class Game {
         case 's': {
           if (!o || o === me) break;
           const w = WEAPONS[e[8]];
-          this.bullets.push({ x: e[2], y: e[3], z: e[4], vx: e[5], vy: e[6], life: e[7], w, owner: o, team: o.team, dmg: 0, cosmetic: true });
+          this.bullets.push({ x: e[2], y: e[3], z: e[4], vx: e[5], vy: e[6], vz: e[9] || 0, life: e[7], w, owner: o, team: o.team, dmg: 0, cosmetic: true });
           Sound.play(w.sound, this.vol(e[2], e[3]) * 0.7);
           this.particles.add({ x: e[2], y: e[3], vx: 0, vy: 0, life: 0.06, max: 0.06, size: w.splash ? 1.4 : 0.7, color: '#ffe9a8', add: true });
           break;
@@ -1454,6 +1485,8 @@ class Game {
       else B.stuckT = Math.max(0, B.stuckT - dt);
     }
     inp.boost = c.onGround && (c.flag >= 0 || (wp.dist > 50 && B.role === 'attack') || B.chase) && Math.abs(da) < 0.25 && c.boost > c.st.boost * 0.3 && sp > 8;
+    // in der Luft Richtung Fluss: mit Nitro rübergleiten statt ins Wasser zu fallen
+    if (!c.onGround && c.boost > 0.25 && (W.waterAt(c.x + c.vx * 0.9, c.y + c.vy * 0.9) !== null || W.waterAt(c.x, c.y) !== null)) inp.boost = true;
     inp.jump = false;
     if (B.jumpT <= 0 && c.onGround) {
       if ((B.hurtT > 0 && Math.random() < 0.04 * (diff + 1)) || (B.stuckT > 0.5)) {
@@ -1480,7 +1513,9 @@ class Game {
       inp.aim = Math.atan2(t.y + t.vy * tt * lead - c.y, t.x + t.vx * tt * lead - c.x) + B.aimErr;
       const dd = Math.sqrt(d2(c.x, c.y, t.x, t.y));
       inp.fire = dd < c.range * 0.95 && Math.abs(angNorm(inp.aim - c.turret)) < (c.w.splash ? 0.2 : 0.14);
-    } else { inp.aim = c.a; inp.fire = false; }
+      const dz = (t.z + 0.9) - (c.z + 1.1);
+      inp.pitch = Math.abs(dz) > 1.8 ? clamp(Math.atan2(dz, Math.max(dd, 1)), -0.6, 0.9) : 0;
+    } else { inp.aim = c.a; inp.fire = false; inp.pitch = 0; }
   }
 
   // ---------------- Darstellung ----------------
@@ -2028,8 +2063,12 @@ class Game {
     // Fadenkreuz + Treffermarker
     if (!touch && Input.mouse.moved && p.alive) {
       const mx = Input.mouse.x * this.dpr, my = Input.mouse.y * this.dpr;
-      g.strokeStyle = 'rgba(255,255,255,0.9)'; g.lineWidth = 2 * D;
-      g.beginPath(); g.arc(mx, my, 11 * D, 0, 7); g.stroke();
+      const lock = this.aimLock && this.aimLock.alive;
+      g.strokeStyle = lock ? '#ff5a4a' : 'rgba(255,255,255,0.9)'; g.lineWidth = 2 * D;
+      g.beginPath(); g.arc(mx, my, (lock ? 14 : 11) * D, 0, 7); g.stroke();
+      // Höhenwinkel des Turms anzeigen (▲ nach oben / ▼ nach unten)
+      const tp = p.tpitch || 0;
+      if (Math.abs(tp) > 0.05) { g.fillStyle = tp > 0 ? '#9fe0ff' : '#ffd28a'; g.font = `800 ${Math.round(11 * D)}px system-ui, sans-serif`; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText((tp > 0 ? '▲ ' : '▼ ') + Math.round(Math.abs(tp) * 57.3) + '°', mx + 17 * D, my - 12 * D); }
       g.fillStyle = '#fff'; g.beginPath(); g.arc(mx, my, 2 * D, 0, 7); g.fill();
       if (this.hitT > 0) {
         g.strokeStyle = '#ff5a4a'; g.lineWidth = 3 * D; const r1_ = 7 * D, r2_ = 15 * D;
@@ -2038,8 +2077,8 @@ class Game {
         g.stroke();
       }
       // wohin der Turm gerade zielt
-      const tx = p.x + Math.cos(p.turret) * 28, ty = p.y + Math.sin(p.turret) * 28;
-      const ts = this.worldToScreen(tx, ty, p.z + 1.2);
+      const tcp = Math.cos(p.tpitch || 0), tx = p.x + Math.cos(p.turret) * 28 * tcp, ty = p.y + Math.sin(p.turret) * 28 * tcp;
+      const ts = this.worldToScreen(tx, ty, p.z + 1.2 + Math.sin(p.tpitch || 0) * 28);
       if (!ts.behind) { g.strokeStyle = 'rgba(255,230,110,0.85)'; g.lineWidth = 2 * D; g.beginPath(); g.arc(ts.x, ts.y, 5 * D, 0, 7); g.stroke(); }
     } else if (touch && this.hitT > 0) {
       g.fillStyle = '#ff5a4a'; g.font = `900 ${28 * D}px system-ui`; g.textAlign = 'center'; g.fillText('✕', SW / 2, SH / 2);
