@@ -23,7 +23,10 @@ const ROOF = ['#b5533c', '#8e3b2e', '#c96a3f', '#5f9e8a', '#7d8188', '#c9b48a', 
 const WALL = ['#f1e4c8', '#f3d9a4', '#e9c3a0', '#f4efe6', '#cfdde3', '#efc9bb', '#e3e6c8', '#f2dcae', '#d9cfc0', '#f6e2d0', '#e8d6e2', '#d6e3cf'];
 
 const TILE_PX = 512;       // Kachelgröße in Pixeln (Meter = TILE_PX / Zoom)
-const NAV = 1.5;           // Navigationsraster in Metern
+const NAV = 2;             // Navigationsraster in Metern
+const STEP = 0.9;          // so hohe Kanten fährt ein Auto einfach hoch
+const DECK_T = 1.2;        // Dicke einer Brückenplatte
+const STEEP = 0.45;        // ab dieser Steigung ist Gelände eine Wand (für Bots)
 const HASH = 8;            // Kollisions-Hash in Metern
 const CAM_H = 170;         // Kamerahöhe für die Perspektive
 
@@ -43,12 +46,37 @@ function pointInPoly(p, x, y) {
   }
   return inside;
 }
+const clampW = (v, a, b) => (v < a ? a : v > b ? b : v);
 function hash32(n) { n = (n ^ 61) ^ (n >>> 16); n = n + (n << 3); n = n ^ (n >>> 4); n = Math.imul(n, 0x27d4eb2d); return (n ^ (n >>> 15)) >>> 0; }
 
 class World {
   constructor(map) {
     this.map = map;
     this.w = map.w; this.h = map.h;
+    // Höhenkarte (Dezimeter, Int16, Base64)
+    this.hz = null;
+    if (map.terrain) {
+      const T = map.terrain, bin = atob(T.data);
+      const n = T.nx * T.ny, hz = new Float32Array(n);
+      for (let i = 0; i < n; i++) { let v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); if (v > 32767) v -= 65536; hz[i] = v / 10; }
+      this.hz = hz; this.tres = T.res; this.tnx = T.nx; this.tny = T.ny;
+    }
+    // Brücken (gerade Platten) und Tunnel
+    this.decks = (map.decks || []).map(d => {
+      const [ax, ay, az, bx, by, bz] = d.p, L = Math.hypot(bx - ax, by - ay) || 1;
+      return { ax, ay, az, bx, by, bz, w: d.w, L, ux: (bx - ax) / L, uy: (by - ay) / L, bb: [Math.min(ax, bx) - d.w, Math.min(ay, by) - d.w, Math.max(ax, bx) + d.w, Math.max(ay, by) + d.w] };
+    });
+    this.tunnels = (map.tunnels || []).map(t => {
+      const segs = [];
+      for (let i = 0; i + 5 < t.p.length; i += 3) {
+        const [ax, ay, az, bx, by, bz] = t.p.slice(i, i + 6), L = Math.hypot(bx - ax, by - ay) || 1;
+        segs.push({ ax, ay, az, bx, by, bz, L });
+      }
+      const xs = t.p.filter((_, i) => i % 3 === 0), ys = t.p.filter((_, i) => i % 3 === 1);
+      return { segs, w: t.w, hgt: t.hgt, name: t.name, p: t.p, bb: [Math.min(...xs) - t.w, Math.min(...ys) - t.w, Math.max(...xs) + t.w, Math.max(...ys) + t.w] };
+    });
+    this.landmarks = map.landmarks || [];
+    this.rails = (map.rails || []).map(r => ({ ax: r.p[0], ay: r.p[1], az: r.p[2], bx: r.p[3], by: r.p[4], bz: r.p[5] }));
     // Gebäude
     this.buildings = map.buildings.map((b, i) => {
       const bb = polyBBox(b.p);
@@ -73,15 +101,19 @@ class World {
       }
       const hsh = hash32(i * 7919 + 13);
       const flat = b.c === 4 || b.h < 4 || (mx - mn) * (mx2 - mn2) > 1800;
+      // auf Hängen: Sockel am tiefsten Punkt, Dach über dem höchsten
+      let tmin = Infinity, tmax = -Infinity;
+      for (let k = 0; k < b.p.length; k += 2) { const t = this.terrain(b.p[k], b.p[k + 1]); if (t < tmin) tmin = t; if (t > tmax) tmax = t; }
       return {
-        p: b.p, h: b.h, c: b.c, n: b.n, bb, cx, cy, ang, flat,
+        p: b.p, h: b.h, c: b.c, n: b.n, bb, cx, cy, ang, flat, lm: !!b.lm,
+        base: tmin - 0.5, top: tmax + b.h,
         ridge: flat ? null : [cx + ca * (mn * 0.72), cy + sa * (mn * 0.72), cx + ca * (mx * 0.72), cy + sa * (mx * 0.72)],
         wall: WALL[hsh % WALL.length], roof: ROOF[b.c] || ROOF[0], dist: 0,
       };
     });
     this.roads = map.roads.map(r => ({ ...r, bb: polyBBox(r.p) }));
     this.areas = map.areas.map(a => ({ ...a, bb: polyBBox(a.p) }));
-    this.water = map.water.map(p => ({ p, bb: polyBBox(p) }));
+    this.water = map.water.map(w => Array.isArray(w) ? { p: w, z: -0.3, bb: polyBBox(w) } : { p: w.p, z: w.z, bb: polyBBox(w.p) });
     this.trees = [];
     for (let i = 0; i < map.trees.length; i += 2) {
       const h = hash32(i);
@@ -114,11 +146,28 @@ class World {
       const p = b.p;
       for (let k = 0; k < p.length; k += 2) {
         const k2 = (k + 2) % p.length;
-        const e = { ax: p[k], ay: p[k + 1], bx: p[k2], by: p[k2 + 1], h: b.h, b };
+        const e = { ax: p[k], ay: p[k + 1], bx: p[k2], by: p[k2 + 1], b };
         add(this.hEdges, [Math.min(e.ax, e.bx), Math.min(e.ay, e.by), Math.max(e.ax, e.bx), Math.max(e.ay, e.by)], e);
       }
     });
     this.water.forEach(w => add(this.hWater, w.bb, w));
+    this.hDeck = Array.from({ length: n }, () => []);
+    this.hTun = Array.from({ length: n }, () => []);
+    // Leitplanken an Dämmen (kollidieren wie Wände in ihrem Höhenbereich)
+    for (const r of this.rails) {
+      const e = { ax: r.ax, ay: r.ay, bx: r.bx, by: r.by, b: { top: Math.max(r.az, r.bz) + 1.1, base: Math.min(r.az, r.bz) - 2.5, p: null } };
+      add(this.hEdges, [Math.min(e.ax, e.bx), Math.min(e.ay, e.by), Math.max(e.ax, e.bx), Math.max(e.ay, e.by)], e);
+    }
+    this.decks.forEach(d => {
+      add(this.hDeck, d.bb, d);
+      // Geländer an beiden Seiten der Brücke
+      const px = -d.uy * d.w / 2, py = d.ux * d.w / 2, rail = { top: Math.max(d.az, d.bz) + 1.1, base: Math.min(d.az, d.bz) - 0.4, p: null };
+      for (const s of [1, -1]) {
+        const e = { ax: d.ax + px * s, ay: d.ay + py * s, bx: d.bx + px * s, by: d.by + py * s, b: rail };
+        add(this.hEdges, [Math.min(e.ax, e.bx), Math.min(e.ay, e.by), Math.max(e.ax, e.bx), Math.max(e.ay, e.by)], e);
+      }
+    });
+    this.tunnels.forEach(t => add(this.hTun, t.bb, t));
     this.trees.forEach(t => add(this.hTrees, [t.x, t.y, t.x, t.y], t, 1));
   }
   cell(x, y) {
@@ -131,17 +180,92 @@ class World {
     let best = null;
     for (const b of this.hBld[c]) {
       if (x < b.bb[0] || x > b.bb[2] || y < b.bb[1] || y > b.bb[3]) continue;
-      if (pointInPoly(b.p, x, y) && (!best || b.h > best.h)) best = b;
+      if (pointInPoly(b.p, x, y) && (!best || b.top > best.top)) best = b;
     }
     return best;
   }
-  inWater(x, y) {
-    const c = this.cell(x, y); if (c < 0) return false;
+  // Wasserspiegel an dieser Stelle (oder null)
+  waterAt(x, y) {
+    const c = this.cell(x, y); if (c < 0) return null;
     for (const w of this.hWater[c]) {
       if (x < w.bb[0] || x > w.bb[2] || y < w.bb[1] || y > w.bb[3]) continue;
-      if (pointInPoly(w.p, x, y)) return true;
+      if (pointInPoly(w.p, x, y)) return w.z;
     }
+    return null;
+  }
+  inWater(x, y) { return this.waterAt(x, y) !== null; }
+
+  // ---------------- Gelände, Brücken, Tunnel ----------------
+  terrain(x, y) {
+    if (!this.hz) return 0;
+    const fx = clampW(x / this.tres, 0, this.tnx - 1.001), fy = clampW(y / this.tres, 0, this.tny - 1.001);
+    const ix = fx | 0, iy = fy | 0, tx = fx - ix, ty = fy - iy, n = this.tnx, i = iy * n + ix, h = this.hz;
+    return h[i] * (1 - tx) * (1 - ty) + h[i + 1] * tx * (1 - ty) + h[i + n] * (1 - tx) * ty + h[i + n + 1] * tx * ty;
+  }
+  // Brückenplatten, die diesen Punkt überdecken: Höhe der Oberseite
+  decksAt(x, y, out) {
+    out.length = 0;
+    const c = this.cell(x, y); if (c < 0) return out;
+    for (const d of this.hDeck[c]) {
+      const rx = x - d.ax, ry = y - d.ay, t = rx * d.ux + ry * d.uy;
+      if (t < 0 || t > d.L || Math.abs(-rx * d.uy + ry * d.ux) > d.w / 2) continue;
+      out.push(d.az + (d.bz - d.az) * t / d.L);
+    }
+    return out;
+  }
+  // Tunnel an dieser Stelle: Boden und Decke (oder null)
+  tunnelAt(x, y) {
+    const c = this.cell(x, y); if (c < 0) return null;
+    for (const tn of this.hTun[c]) {
+      for (const sg of tn.segs) {
+        const dx = sg.bx - sg.ax, dy = sg.by - sg.ay;
+        let t = ((x - sg.ax) * dx + (y - sg.ay) * dy) / (sg.L * sg.L);
+        if (t < -0.02 || t > 1.02) continue;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const px = sg.ax + dx * t, py = sg.ay + dy * t;
+        if ((x - px) ** 2 + (y - py) ** 2 > (tn.w / 2) ** 2) continue;
+        const floor = sg.az + (sg.bz - sg.az) * t;
+        return { floor, ceil: floor + tn.hgt, tn };
+      }
+    }
+    return null;
+  }
+  // Fahrbare Oberfläche unter einem Objekt in Höhe z (Gelände, Tunnelboden, Brücke, Dach)
+  groundAt(x, y, z) {
+    const tn = this.tunnelAt(x, y);
+    let g, kind = 'terrain';
+    if (tn && z < tn.ceil - 0.5) { g = tn.floor; kind = 'tunnel'; }
+    else g = this.terrain(x, y);
+    const ds = this.decksAt(x, y, this._dk || (this._dk = []));
+    for (const dz of ds) if (dz <= z + STEP + 0.3 && dz > g) { g = dz; kind = 'deck'; }
+    const b = this.buildingAt(x, y);
+    if (b && b.top <= z + 0.6 && b.top > g) { g = b.top; kind = 'roof'; }
+    this.groundKind = kind;
+    return g;
+  }
+  // Ist der Platz für eine Karosserie (z .. z+1.6) durch Gelände, Tunneldecke oder Brückenplatte versperrt?
+  blockedAt(x, y, z, step = STEP) {
+    if (x < 1 || y < 1 || x > this.w - 1 || y > this.h - 1) return true;
+    const tn = this.tunnelAt(x, y);
+    if (tn && z < tn.ceil - 0.5) { if (z + 1.6 > tn.ceil || tn.floor > z + step) return true; }
+    else if (this.terrain(x, y) > z + step) return true;
+    const ds = this.decksAt(x, y, this._dk2 || (this._dk2 = []));
+    for (const dz of ds) if (dz > z + step && dz - DECK_T < z + 1.6) return true;
     return false;
+  }
+  // Unterseite der nächsten Decke über z (Tunneldecke, Brückenplatte) oder null
+  ceilingAt(x, y, z) {
+    let best = null;
+    const tn = this.tunnelAt(x, y);
+    if (tn && z < tn.ceil - 0.5 && z > tn.floor - 1.5) best = tn.ceil;
+    const ds = this.decksAt(x, y, this._dk4 || (this._dk4 = []));
+    for (const dz of ds) { const bot = dz - DECK_T; if (bot > z + 0.3 && (best === null || bot < best)) best = bot; }
+    return best;
+  }
+  // Steigung (dz/dx, dz/dy) der Oberfläche
+  slopeAt(x, y, z) {
+    const e = 1.0;
+    return [(this.groundAt(x + e, y, z) - this.groundAt(x - e, y, z)) / (2 * e), (this.groundAt(x, y + e, z) - this.groundAt(x, y - e, z)) / (2 * e)];
   }
   // Kreis gegen statische Geometrie auflösen. Rückgabe: stärkste Normale oder null
   collideCircle(o, r, z) {
@@ -152,7 +276,7 @@ class World {
     for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) {
       const ci = cy * this.hw + cx;
       for (const e of this.hEdges[ci]) {
-        if (e.h <= z + 0.25 || seen.has(e)) continue;
+        if (e.b.top <= z + 0.25 || e.b.base - 1 > z + 1.6 || seen.has(e)) continue;
         seen.add(e);
         const dx = e.bx - e.ax, dy = e.by - e.ay;
         const l2 = dx * dx + dy * dy || 1;
@@ -165,7 +289,7 @@ class World {
           const d = Math.sqrt(d2) || 0.0001;
           nx /= d; ny /= d;
           // falls Mittelpunkt im Gebäude: Normale umdrehen
-          if (pointInPoly(e.b.p, o.x, o.y)) { nx = -nx; ny = -ny; o.x = px + nx * r; o.y = py + ny * r; }
+          if (e.b.p && pointInPoly(e.b.p, o.x, o.y)) { nx = -nx; ny = -ny; o.x = px + nx * r; o.y = py + ny * r; }
           else { o.x += nx * (r - d); o.y += ny * (r - d); }
           if (!hit || (r - d) > hit.pen) hit = { nx, ny, pen: r - d, kind: 'b' };
         }
@@ -195,8 +319,13 @@ class World {
   // Punkt-Test für Geschosse
   solidAt(x, y, z) {
     if (x < 0 || y < 0 || x > this.w || y > this.h) return true;
+    const tn = this.tunnelAt(x, y);
+    if (tn && z > tn.floor - 0.2 && z < tn.ceil) { /* im Tunnel: frei */ }
+    else if (z < this.terrain(x, y) - 0.2) return true;
+    const ds = this.decksAt(x, y, this._dk3 || (this._dk3 = []));
+    for (const dz of ds) if (z <= dz && z > dz - DECK_T) return true;
     const b = this.buildingAt(x, y);
-    if (b && b.h > z) return true;
+    if (b && z < b.top && z > b.base - 1) return true;
     return false;
   }
 
@@ -217,20 +346,70 @@ class World {
         for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
         g.closePath(); g.fill(); if (inflate > 0) g.stroke();
       }
+      // Leitplanken sind Wände
+      g.lineWidth = 1 + inflate * 2;
+      for (const r of this.rails) { g.beginPath(); g.moveTo(r.ax, r.ay); g.lineTo(r.bx, r.by); g.stroke(); }
+      // Flussbrücken: Ufer direkt neben/unter der Brücke sperren, damit Bots nur über die Rampen auffahren
+      for (const dk of this.decks) {
+        if (this.waterAt((dk.ax + dk.bx) / 2, (dk.ay + dk.by) / 2) === null) continue;
+        const px = -dk.uy, py = dk.ux;
+        g.lineWidth = 4 + inflate * 2; g.lineCap = 'butt';
+        for (const sgn of [1, -1]) {
+          const o = (dk.w / 2 + 2) * sgn;
+          g.beginPath(); g.moveTo(dk.ax - dk.ux * 12 + px * o, dk.ay - dk.uy * 12 + py * o); g.lineTo(dk.bx + dk.ux * 12 + px * o, dk.by + dk.uy * 12 + py * o); g.stroke();
+        }
+        g.lineCap = 'round';
+      }
       for (const c of this.map.crates) if (c.t === 2) {
         g.save(); g.translate(c.x, c.y); g.rotate(c.a); g.fillRect(-1.6 - inflate, -0.5 - inflate, 3.2 + inflate * 2, 1 + inflate * 2); g.restore();
       }
       const d = g.getImageData(0, 0, gw, gh).data;
       const out = new Uint8Array(gw * gh);
       for (let i = 0; i < out.length; i++) out[i] = d[i * 4] > 110 ? 1 : 0;
+      // steile Hänge sind Wände, Brücken und Tunnel dagegen befahrbar
+      if (this.hz) {
+        const pass = this.passMask || (this.passMask = this.drawPassMask(g, gw, gh));
+        for (let cy = 0; cy < gh; cy++) for (let cx = 0; cx < gw; cx++) {
+          const i = cy * gw + cx;
+          if (pass[i]) { out[i] = 0; continue; }
+          const x = (cx + 0.5) * NAV, y = (cy + 0.5) * NAV;
+          const sx = (this.terrain(x + 1.5, y) - this.terrain(x - 1.5, y)) / 3, sy = (this.terrain(x, y + 1.5) - this.terrain(x, y - 1.5)) / 3;
+          if (sx * sx + sy * sy > STEEP * STEEP) out[i] = 1;
+        }
+      }
       for (let x = 0; x < gw; x++) { out[x] = 1; out[(gh - 1) * gw + x] = 1; }
       for (let y = 0; y < gh; y++) { out[y * gw] = 1; out[y * gw + gw - 1] = 1; }
       return out;
     };
     this.solid = draw(0);
     this.nav = draw(1.25);
+    // Ränder wieder sperren
+    for (const grid of [this.solid, this.nav]) {
+      for (let x = 0; x < gw; x++) { grid[x] = 1; grid[(gh - 1) * gw + x] = 1; }
+      for (let y = 0; y < gh; y++) { grid[y * gw] = 1; grid[y * gw + gw - 1] = 1; }
+    }
     this.fields = new Map();
     this.q = new Int32Array(gw * gh);
+  }
+  // Raster der Brücken (+ Anschluss) und Tunnel: immer befahrbar
+  drawPassMask(g, gw, gh) {
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.fillStyle = '#000'; g.fillRect(0, 0, gw, gh);
+    g.setTransform(1 / NAV, 0, 0, 1 / NAV, 0, 0);
+    g.strokeStyle = '#fff'; g.lineCap = 'butt'; g.lineJoin = 'round';
+    for (const d of this.decks) {
+      g.lineWidth = d.w - 2;
+      g.beginPath(); g.moveTo(d.ax - d.ux * 10, d.ay - d.uy * 10); g.lineTo(d.bx + d.ux * 10, d.by + d.uy * 10); g.stroke();
+    }
+    for (const t of this.tunnels) {
+      g.lineWidth = t.w - 1.5;
+      g.beginPath(); g.moveTo(t.p[0], t.p[1]);
+      for (let i = 3; i < t.p.length; i += 3) g.lineTo(t.p[i], t.p[i + 1]);
+      g.stroke();
+    }
+    const d = g.getImageData(0, 0, gw, gh).data, out = new Uint8Array(gw * gh);
+    for (let i = 0; i < out.length; i++) out[i] = d[i * 4] > 110 ? 1 : 0;
+    return out;
   }
   navIdx(x, y) {
     const cx = Math.max(0, Math.min(this.gw - 1, Math.floor(x / NAV)));

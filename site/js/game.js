@@ -105,7 +105,14 @@ const Input = {
 // ---------------- Partikel ----------------
 class Particles {
   constructor() { this.list = []; }
-  add(p) { if (this.list.length < 1600) this.list.push(p); }
+  add(p) {
+    if (this.list.length >= 1600) return;
+    if (this.world) {
+      p.gz = this.world.terrain(p.x, p.y);
+      if (p.zAbs !== undefined) { p.z = p.zAbs - p.gz; if (p.vz === undefined) p.vz = 0; }
+    }
+    this.list.push(p);
+  }
   update(dt) {
     const L = this.list;
     for (let i = L.length - 1; i >= 0; i--) {
@@ -173,7 +180,7 @@ class Car {
     const p = g.world.randomFreeNear(base.x, base.y, 3, 13);
     this.x = p.x; this.y = p.y;
     this.a = Math.atan2(g.world.h / 2 - base.y, g.world.w / 2 - base.x) + rand(-0.4, 0.4);
-    this.vx = 0; this.vy = 0; this.z = 0; this.vz = 0; this.groundZ = 0; this.onGround = true;
+    this.vx = 0; this.vy = 0; this.z = g.world.terrain(p.x, p.y); this.vz = 0; this.groundZ = this.z; this.groundKind = 'terrain'; this.onGround = true;
     this.turret = this.a;
     this.hp = this.st.hp; this.boost = this.st.boost; this.boosting = false;
     this.jumpCd = 0; this.fireCd = 0; this.mines = 2; this.mineCd = 0; this.mineRegen = 0;
@@ -205,9 +212,10 @@ class Game {
     this.earned = 0; this.shake = 0; this.zoomMul = 1; this.showBoard = false; this.paused = false;
     this.cam = { x: 0, y: 0 };
     this.mini = this.world.renderMini(190);
-    this.props = this.map.crates.map(c => ({ ...c, ...PROP[c.t], alive: true, hpNow: PROP[c.t].hp, respawnT: 0 }));
-    this.pickups = this.map.pickups.map(p => ({ ...p, active: true, t2: 0 }));
-    this.flags = this.world.bases.map((b, i) => ({ team: i, state: 'base', x: b.x, y: b.y, carrier: null, dropT: 0 }));
+    this.props = this.map.crates.map(c => ({ ...c, ...PROP[c.t], z: this.world.terrain(c.x, c.y), alive: true, hpNow: PROP[c.t].hp, respawnT: 0 }));
+    this.pickups = this.map.pickups.map(p => ({ ...p, z: this.world.terrain(p.x, p.y), active: true, t2: 0 }));
+    this.flags = this.world.bases.map((b, i) => ({ team: i, state: 'base', x: b.x, y: b.y, z: this.world.terrain(b.x, b.y), carrier: null, dropT: 0 }));
+    this.particles.world = this.world;
     this.demo = !!opts.demo;
     this.mode = opts.mode || 'local';
     this.isHost = this.mode === 'host'; this.isClient = this.mode === 'client';
@@ -544,10 +552,14 @@ class Game {
     const steer = c.steerS;
     c.protect = Math.max(0, c.protect - dt); c.flashT = Math.max(0, c.flashT - dt);
     c.jumpCd = Math.max(0, c.jumpCd - dt); c.rampCd = Math.max(0, c.rampCd - dt);
-    // Boden
-    const b = W.buildingAt(c.x, c.y);
-    c.groundZ = b && c.z >= b.h - 0.5 ? b.h : 0;
-    const onGround = c.z <= c.groundZ + 0.05 && c.vz <= 0.01;
+    // Boden: Gelände, Tunnelboden, Brücke oder Dach
+    c.groundZ = W.groundAt(c.x, c.y, c.z);
+    c.groundKind = W.groundKind;
+    const [sx, sy] = c.groundKind === 'roof' ? [0, 0] : W.slopeAt(c.x, c.y, c.z);
+    c.slopeX = sx; c.slopeY = sy;
+    const surfVz = sx * c.vx + sy * c.vy;
+    c.airLock = Math.max(0, (c.airLock || 0) - dt);
+    const onGround = c.airLock <= 0 && c.z <= c.groundZ + 0.1 && c.vz <= surfVz + 0.8;
     if (!c.onGround && onGround) {
       if (c.airT > 0.35) {
         Sound.play('land', this.vol(c.x, c.y));
@@ -557,13 +569,16 @@ class Game {
     }
     c.onGround = onGround;
     if (!onGround) c.airT += dt;
+    // Hangabtrieb: bergauf langsamer, bergab schneller
+    if (onGround) { c.vx -= GRAV * 0.6 * sx * dt; c.vy -= GRAV * 0.6 * sy * dt; }
     const fx = Math.cos(c.a), fy = Math.sin(c.a);
     let vF = c.vx * fx + c.vy * fy, vL = -c.vx * fy + c.vy * fx;
     // Turbo
     c.boosting = playing && inp.boost && c.boost > 0.02 && thr >= 0;
     if (c.boosting) { c.boost = Math.max(0, c.boost - dt); }
     else c.boost = Math.min(st.boost, c.boost + st.boostRegen * dt);
-    const surfWater = !b && c.z < 0.3 && W.inWater(c.x, c.y);
+    const wz = W.waterAt(c.x, c.y);
+    const surfWater = wz !== null && c.groundKind !== 'deck' && c.groundKind !== 'roof' && c.z < wz + 0.5;
     if (onGround) {
       let maxS = st.speed * (c.boosting ? 1.5 : 1) * (c.flag >= 0 ? 0.94 : 1);
       let target = 0, acc = 8;
@@ -592,7 +607,7 @@ class Game {
       }
       // Sprung
       if (playing && inp.jump && c.jumpCd <= 0) {
-        c.vz = st.jump; c.jumpCd = st.jumpCd; c.onGround = false;
+        c.vz = Math.max(0, surfVz) + st.jump; c.jumpCd = st.jumpCd; c.onGround = false;
         Sound.play('jump', this.vol(c.x, c.y));
         for (let i = 0; i < 10; i++) this.particles.add({ x: c.x, y: c.y, vx: rand(-6, 6), vy: rand(-6, 6), life: 0.5, max: 0.5, size: 0.7, grow: 2, color: '#d7d0c0', alpha: 0.5, drag: 4 });
       }
@@ -609,13 +624,13 @@ class Game {
         vL *= Math.exp(-2.5 * dt);
         c.vz += GRAV * 0.84 * dt;
         if (c.vz < -3) c.vz += 14 * dt;
-        if (c.z > 32 && c.vz > 0) c.vz *= 0.9;
-        if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6, y: c.y - fy * c.def.len * 0.6, z: c.z + 0.6, vz: -2, vx: -fx * 12 + rand(-2, 2), vy: -fy * 12 + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
+        if (c.z - c.groundZ > 32 && c.vz > 0) c.vz *= 0.9;
+        if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6, y: c.y - fy * c.def.len * 0.6, zAbs: c.z + 0.6, vz: -2, vx: -fx * 12 + rand(-2, 2), vy: -fy * 12 + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
       }
     }
     c.vx = fx * vF - fy * vL; c.vy = fy * vF + fx * vL;
     // Rampen
-    if (onGround && c.groundZ === 0 && c.rampCd <= 0) {
+    if (onGround && c.groundKind !== 'roof' && c.rampCd <= 0) {
       for (const r of W.ramps) {
         const dx = c.x - r.x, dy = c.y - r.y;
         if (dx * dx + dy * dy > 30) continue;
@@ -624,7 +639,7 @@ class Game {
         if (Math.abs(u) < r.len / 2 && Math.abs(v) < r.wid / 2 + 0.5) {
           const along = c.vx * ca + c.vy * sa;
           if (along > 4) {
-            c.vz = clamp(4.5 + along * 0.32, 7, 15.5); c.rampCd = 0.8; c.onGround = false; c.z = Math.max(c.z, 0.4);
+            c.vz = Math.max(0, surfVz) + clamp(4.5 + along * 0.32, 7, 15.5); c.rampCd = 0.8; c.onGround = false; c.z = Math.max(c.z, c.groundZ + 0.4);
             // auf Rampenrichtung ausrichten, damit man nicht seitlich abprallt
             const sp2 = Math.hypot(c.vx, c.vy);
             c.vx = c.vx * 0.5 + ca * sp2 * 0.5; c.vy = c.vy * 0.5 + sa * sp2 * 0.5;
@@ -634,14 +649,40 @@ class Game {
         }
       }
     }
-    // Schwerkraft
-    c.vz -= GRAV * dt; c.z += c.vz * dt;
-    if (c.z < c.groundZ) { c.z = c.groundZ; if (c.vz < 0) c.vz = 0; }
+    // Schwerkraft: am Boden folgt das Auto der Oberfläche, sonst fällt es
+    if (c.onGround) c.vz = surfVz; else c.vz -= GRAV * dt;
+    c.z += c.vz * dt;
+    // Decke (Tunnel, Brückenunterseite) begrenzt Sprünge
+    const roof = W.ceilingAt(c.x, c.y, c.z);
+    if (roof !== null && c.z + 1.6 > roof) { c.z = Math.max(c.groundZ, roof - 1.6); if (c.vz > 0) c.vz = 0; }
     // Bewegung + Kollision (Substeps)
     const sp = c.speed;
     const steps = sp * dt > 0.6 ? 2 : 1;
+    let moved = 0;
     for (let s = 0; s < steps; s++) {
-      c.x += c.vx * dt / steps; c.y += c.vy * dt / steps;
+      const ox = c.x, oy = c.y;
+      const mx = c.vx * dt / steps, my = c.vy * dt / steps, ml = Math.hypot(mx, my);
+      // Gelände/Brücken: steile Hänge und Plattenkanten sind Wände
+      // höchstens 45° Steigung (bezogen auf den Abstand zum Prüfpunkt) plus kleine Bordsteinkante
+      const rr = c.def.radius * 0.85, ux = ml > 1e-4 ? mx / ml : 0, uy = ml > 1e-4 ? my / ml : 0;
+      const stepH = 0.15 + 1.0 * ml, stepF = 0.15 + 1.0 * (ml + rr);
+      // am Boden fährt man nicht ins Wasser (Ufer wie ein Bordstein) – nur ein zu kurzer Sprung endet im Fluss
+      const wet = (x, y) => { if (c.z - c.groundZ > 0.8 || c.groundKind !== 'terrain') return false; const wz2 = W.waterAt(x, y); return wz2 !== null && wz2 > c.z - 3; };
+      const bl = (x, y) => W.blockedAt(x, y, c.z, stepH) || wet(x, y) || (ml > 1e-4 && (W.blockedAt(x + ux * rr, y + uy * rr, c.z, stepF) || wet(x + ux * rr, y + uy * rr)));
+      if (!bl(ox + mx, oy + my)) { c.x = ox + mx; c.y = oy + my; }
+      else {
+        const imp = Math.hypot(c.vx, c.vy);
+        if (!bl(ox + mx, oy)) { c.x = ox + mx; c.vy *= -0.15; }
+        else if (!bl(ox, oy + my)) { c.y = oy + my; c.vx *= -0.15; }
+        else { c.vx *= -0.2; c.vy *= -0.2; }
+        if (imp > 22) {
+          const cdmg = (imp - 22) * 0.45 / c.def.mass;
+          if (this.isClient && c === this.player) c.crashAcc += cdmg;
+          this.damage(c, cdmg, null, 'crash');
+          Sound.play('clank', this.vol(c.x, c.y));
+        }
+      }
+      moved += Math.hypot(c.x - ox, c.y - oy);
       const hit = W.collideCircle(c, c.def.radius, c.z);
       if (hit) {
         const vn = c.vx * hit.nx + c.vy * hit.ny;
@@ -654,14 +695,23 @@ class Game {
             this.damage(c, cdmg, null, 'crash');
             Sound.play('clank', this.vol(c.x, c.y));
             if (c.isPlayer) this.shake = Math.min(1, this.shake + 0.3);
-            for (let i = 0; i < 6; i++) this.particles.add({ type: 'spark', x: c.x - hit.nx * c.def.radius, y: c.y - hit.ny * c.def.radius, vx: rand(-12, 12), vy: rand(-12, 12), life: 0.3, max: 0.3, size: 0.15, color: '#ffd27a', add: true });
+            for (let i = 0; i < 6; i++) this.particles.add({ type: 'spark', x: c.x - hit.nx * c.def.radius, y: c.y - hit.ny * c.def.radius, zAbs: c.z + 0.8, vx: rand(-12, 12), vy: rand(-12, 12), life: 0.3, max: 0.3, size: 0.15, color: '#ffd27a', add: true });
           }
         }
       }
       this.propCollide(c);
     }
+    // Landen / an der Oberfläche bleiben (über scharfe Kuppen hebt das Auto ab)
+    const g2 = W.groundAt(c.x, c.y, c.z);
+    if (c.z < g2) {
+      c.z = g2;
+      const [s2x, s2y] = W.groundKind === 'roof' ? [0, 0] : W.slopeAt(c.x, c.y, c.z);
+      const sv = s2x * c.vx + s2y * c.vy;
+      if (c.vz < sv) c.vz = sv;
+    } else if (c.onGround && c.z - g2 < 0.18 + 0.05 * moved) c.z = g2;
+    else if (c.onGround) { if (c.vz > 3.5) c.vz = 3.5; c.airLock = 0.12; }   // über Kuppen nur sanft abheben (Federung)
     // Wasser
-    if (surfWater && c.z < 0.3) {
+    if (surfWater) {
       c.sinkT += dt; c.vx *= 0.9; c.vy *= 0.9;
       if (Math.random() < 0.5) this.particles.add({ x: c.x + rand(-2, 2), y: c.y + rand(-2, 2), vx: rand(-3, 3), vy: rand(-3, 3), life: 0.7, max: 0.7, size: 0.6, grow: 2, color: '#cfe8ff', alpha: 0.7 });
       if (c.sinkT > 0.5) {
@@ -676,7 +726,7 @@ class Game {
       c.smokeT -= dt;
       if (c.smokeT <= 0) {
         c.smokeT = c.hp < c.st.hp * 0.15 ? 0.05 : 0.12;
-        this.particles.add({ x: c.x, y: c.y, z: c.z + 1, vz: 2, vx: rand(-1, 1) + c.vx * 0.2, vy: rand(-1, 1) + c.vy * 0.2, life: 1.2, max: 1.2, size: 0.6, grow: 1.8, color: c.hp < c.st.hp * 0.15 ? '#2a2a2a' : '#666', alpha: 0.55 });
+        this.particles.add({ x: c.x, y: c.y, zAbs: c.z + 1, vz: 2, vx: rand(-1, 1) + c.vx * 0.2, vy: rand(-1, 1) + c.vy * 0.2, life: 1.2, max: 1.2, size: 0.6, grow: 1.8, color: c.hp < c.st.hp * 0.15 ? '#2a2a2a' : '#666', alpha: 0.55 });
       }
     }
     this.dropMine(c, dt, playing);
@@ -687,7 +737,7 @@ class Game {
     if (playing && !this.isClient && c.input.mine && c.mines > 0 && c.mineCd <= 0 && c.z <= c.groundZ + 0.3) {
       c.mines--; c.mineCd = 0.8;
       const fx = Math.cos(c.a), fy = Math.sin(c.a);
-      this.mines.push({ x: c.x - fx * c.def.len * 0.7, y: c.y - fy * c.def.len * 0.7, team: c.team, owner: c, arm: 0.9, life: 60 });
+      this.mines.push({ x: c.x - fx * c.def.len * 0.7, y: c.y - fy * c.def.len * 0.7, z: c.groundZ, team: c.team, owner: c, arm: 0.9, life: 60 });
       Sound.play('mine');
     }
   }
@@ -706,8 +756,8 @@ class Game {
       if (rs.cd > 0) { const d = rs.cd; rs.cd = 0; this.damage(c, d, null, 'crash'); }
       if (rs.w && c.alive) { Sound.play('splash', this.vol(c.x, c.y)); this.kill(c, c.lastAttacker && c.lastAttackT > performance.now() - 5000 ? c.lastAttacker : null, 'water'); return; }
     }
-    const b = this.world.buildingAt(c.x, c.y);
-    c.groundZ = b && c.z >= b.h - 0.5 ? b.h : 0;
+    c.groundZ = this.world.groundAt(c.x, c.y, c.z);
+    c.groundKind = this.world.groundKind;
     c.onGround = c.z <= c.groundZ + 0.15;
     this.dropMine(c, dt, playing);
   }
@@ -731,7 +781,7 @@ class Game {
   }
   propCollide(c) {
     for (const p of this.props) {
-      if (!p.alive || c.z > p.h) continue;
+      if (!p.alive || c.z > p.z + p.h || c.z + 1.6 < p.z) continue;
       const dx = c.x - p.x, dy = c.y - p.y;
       if (dx * dx + dy * dy > 16) continue;
       const ca = Math.cos(p.a), sa = Math.sin(p.a);
@@ -859,7 +909,11 @@ class Game {
       }
       const ox = b.x, oy = b.y;
       b.x += b.vx * dt; b.y += b.vy * dt;
-      if (b.w === WEAPONS.cannon) b.z = Math.max(0.6, b.z - dt * 0.4);
+      if (b.w === WEAPONS.cannon) b.z -= dt * 0.4;
+      // flache Hänge: Geschoss folgt dem Boden, steile Hänge/Wände treffen
+      const gb = W.groundAt(b.x, b.y, b.z);
+      if (b.z < gb + 0.35 && gb - (b.gPrev === undefined ? gb : b.gPrev) < 1.0) b.z = gb + 0.5;
+      b.gPrev = gb;
       // Autos
       for (const c of this.cars) {
         if (!c.alive || c.team === b.team) continue;
@@ -881,7 +935,7 @@ class Game {
       }
       // Kisten
       if (!dead) for (const p of this.props) {
-        if (!p.alive || b.z > p.h + 0.4) continue;
+        if (!p.alive || b.z > p.z + p.h + 0.4 || b.z < p.z - 0.5) continue;
         const dx = b.x - p.x, dy = b.y - p.y;
         if (dx * dx + dy * dy > 9) continue;
         const ca = Math.cos(p.a), sa = Math.sin(p.a);
@@ -947,6 +1001,7 @@ class Game {
   damage(c, amt, by, kind) {
     if (this.isClient) return;
     if (!c.alive || c.protect > 0 || amt <= 0 || this.state === 'over') return;
+    if (c.flag >= 0) amt *= 0.7;   // Flaggenträger halten etwas mehr aus (große Karte)
     c.hp -= amt; c.flashT = 0.08;
     if (by && by !== c) { c.hitBy.set(by, performance.now()); c.lastAttacker = by; c.lastAttackT = performance.now(); }
     if (c.bot) c.bot.hurtT = 1.2;
@@ -988,13 +1043,13 @@ class Game {
       let boom = m.life <= 0;
       if (m.arm <= 0 && !boom) {
         for (const c of this.cars) {
-          if (!c.alive || c.team === m.team || c.z > c.groundZ + 1.0 || c.groundZ > 0) continue;
+          if (!c.alive || c.team === m.team || c.z > c.groundZ + 1.0 || Math.abs(c.groundZ - (m.z || 0)) > 1.5) continue;
           if (d2(c.x, c.y, m.x, m.y) < 2.4 * 2.4) { boom = true; break; }
         }
       }
       if (boom) {
         this.mines.splice(i, 1);
-        this.explode({ x: m.x, y: m.y, z: 0.3, team: m.team, owner: m.owner, dmg: 55, w: { splash: 4.5 } });
+        this.explode({ x: m.x, y: m.y, z: (m.z || 0) + 0.3, team: m.team, owner: m.owner, dmg: 55, w: { splash: 4.5 } });
       }
     }
   }
@@ -1005,30 +1060,31 @@ class Game {
     const f = this.flags[c.flag];
     c.flag = -1;
     const W = this.world;
-    if (toBase || W.inWater(c.x, c.y) || W.buildingAt(c.x, c.y) || W.nav[W.navIdx(c.x, c.y)] && W.solid[W.navIdx(c.x, c.y)]) {
+    const fwz = W.waterAt(c.x, c.y);
+    if (toBase || (fwz !== null && c.z < fwz + 1.5) || c.groundKind === 'roof' || W.nav[W.navIdx(c.x, c.y)] && W.solid[W.navIdx(c.x, c.y)]) {
       this.resetFlag(f, true);
     } else {
-      f.state = 'dropped'; f.x = c.x; f.y = c.y; f.carrier = null; f.dropT = 25;
+      f.state = 'dropped'; f.x = c.x; f.y = c.y; f.z = c.groundZ; f.carrier = null; f.dropT = 25;
       this.log({ text: 'hat die Flagge verloren', a: c, flagTeam: f.team });
     }
   }
   resetFlag(f, msg) {
     const b = this.world.bases[f.team];
-    f.state = 'base'; f.x = b.x; f.y = b.y; f.carrier = null;
+    f.state = 'base'; f.x = b.x; f.y = b.y; f.z = this.world.terrain(b.x, b.y); f.carrier = null;
     if (msg) this.log({ text: 'Flagge ist zurück in der Basis', flagTeam: f.team });
   }
   updateFlags(dt) {
     if (this.state !== 'play') return;
     const bases = this.world.bases;
     for (const f of this.flags) {
-      if (f.state === 'carried') { f.x = f.carrier.x; f.y = f.carrier.y; }
+      if (f.state === 'carried') { f.x = f.carrier.x; f.y = f.carrier.y; f.z = f.carrier.z; }
       if (f.state === 'dropped') { f.dropT -= dt; if (f.dropT <= 0) this.resetFlag(f, true); }
     }
     for (const c of this.cars) {
       if (!c.alive || c.z > c.groundZ + 3) continue;
       for (const f of this.flags) {
         if (f.state === 'carried') continue;
-        if (d2(c.x, c.y, f.x, f.y) > 3.8 * 3.8) continue;
+        if (d2(c.x, c.y, f.x, f.y) > 3.8 * 3.8 || Math.abs(c.z - f.z) > 4) continue;
         if (f.team !== c.team && c.flag < 0) {
           f.state = 'carried'; f.carrier = c; c.flag = f.team;
           c.score += 3;
@@ -1064,7 +1120,7 @@ class Game {
       if (p.temp !== undefined) { p.temp -= dt; if (p.temp <= 0) { this.pickups.splice(i, 1); continue; } }
       if (!p.active) { p.t2 -= dt; if (p.t2 <= 0) p.active = true; continue; }
       for (const c of this.cars) {
-        if (!c.alive || c.z > c.groundZ + 2.5 || d2(c.x, c.y, p.x, p.y) > 2.8 * 2.8) continue;
+        if (!c.alive || c.z > c.groundZ + 2.5 || Math.abs(c.z - (p.z || 0)) > 3 || d2(c.x, c.y, p.x, p.y) > 2.8 * 2.8) continue;
         if (p.t === 0 && c.hp >= c.st.hp) continue;
         if (p.t === 2 && !c.human) continue;
         if (p.t === 0) c.hp = Math.min(c.st.hp, c.hp + c.st.hp * 0.45);
@@ -1101,10 +1157,10 @@ class Game {
       c: this.cars.map(c => [c.id, r2(c.x), r2(c.y), r2(c.a), r2(c.turret), r2(c.z), r1(c.vx), r1(c.vy), Math.ceil(c.hp), c.alive ? 1 : 0, c.flag,
         c.boosting ? 1 : 0, c.protect > 0 ? 1 : 0, r1(c.respawnT), c.kills, c.deaths, c.caps, c.returns, c.score, c.earned, c.mines, r2(c.boost),
         c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg]),
-      f: this.flags.map(f => [f.state, r1(f.x), r1(f.y), f.carrier ? f.carrier.id : 0, r1(f.dropT)]),
+      f: this.flags.map(f => [f.state, r1(f.x), r1(f.y), f.carrier ? f.carrier.id : 0, r1(f.dropT), r1(f.z)]),
       pr: this.props.map(p => (p.alive ? 1 : 0)).join(''),
       pk: this.pickups.map(p => [r1(p.x), r1(p.y), p.t, p.active ? 1 : 0]),
-      m: this.mines.map(m => [r1(m.x), r1(m.y), m.team, m.arm > 0 ? 0 : 1]),
+      m: this.mines.map(m => [r1(m.x), r1(m.y), m.team, m.arm > 0 ? 0 : 1, r1(m.z || 0)]),
       ev: this.events,
     };
     this.events = [];
@@ -1123,7 +1179,7 @@ class Game {
     const old = c.rs;
     c.rs = {
       x: num(d.x, 0, this.world.w), y: num(d.y, 0, this.world.h), a: num(d.a, -100, 100), vx: num(d.vx, -80, 80), vy: num(d.vy, -80, 80),
-      z: num(d.z, 0, 80), vz: num(d.vz, -80, 80), b: !!d.b, w: !!d.w || !!(old && old.w), cd: num(d.cd, 0, 200) + (old ? old.cd : 0), life: d.l, t: performance.now(),
+      z: num(d.z, -20, 160), vz: num(d.vz, -80, 80), b: !!d.b, w: !!d.w || !!(old && old.w), cd: num(d.cd, 0, 200) + (old ? old.cd : 0), life: d.l, t: performance.now(),
     };
   }
   // Spieler hat die Verbindung verloren -> Bot übernimmt
@@ -1177,7 +1233,7 @@ class Game {
         const fx = Math.cos(c.a), fy = Math.sin(c.a);
         this.particles.add({ x: c.x - fx * c.def.len * 0.55, y: c.y - fy * c.def.len * 0.55, vx: -fx * 10 + rand(-2, 2), vy: -fy * 10 + rand(-2, 2), life: 0.25, max: 0.25, size: 0.6, grow: -1.5, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffffff', add: true });
       }
-      if (c.hp < c.st.hp * 0.35 && Math.random() < 0.15) this.particles.add({ x: c.x, y: c.y, z: c.z + 1, vz: 2, vx: rand(-1, 1), vy: rand(-1, 1), life: 1.2, max: 1.2, size: 0.6, grow: 1.8, color: '#555', alpha: 0.55 });
+      if (c.hp < c.st.hp * 0.35 && Math.random() < 0.15) this.particles.add({ x: c.x, y: c.y, zAbs: c.z + 1, vz: 2, vx: rand(-1, 1), vy: rand(-1, 1), life: 1.2, max: 1.2, size: 0.6, grow: 1.8, color: '#555', alpha: 0.55 });
     }
     this.updateBullets(dt);
     // Ping
@@ -1227,14 +1283,14 @@ class Game {
         c.vx = a[6]; c.vy = a[7]; c.boosting = !!a[11];
       }
     }
-    s.f.forEach((a, i) => { const f = this.flags[i]; f.state = a[0]; f.x = a[1]; f.y = a[2]; f.carrier = a[3] ? this.byId.get(a[3]) : null; f.dropT = a[4]; });
+    s.f.forEach((a, i) => { const f = this.flags[i]; f.state = a[0]; f.x = a[1]; f.y = a[2]; f.carrier = a[3] ? this.byId.get(a[3]) : null; f.dropT = a[4]; f.z = a[5] !== undefined ? a[5] : this.world.terrain(f.x, f.y); });
     for (let i = 0; i < this.props.length; i++) {
       const alive = s.pr[i] === '1', p = this.props[i];
       if (p.alive && !alive) this.breakPropFx(p, null);
       p.alive = alive;
     }
-    this.pickups = s.pk.map(a => ({ x: a[0], y: a[1], t: a[2], active: !!a[3] }));
-    this.mines = s.m.map(a => ({ x: a[0], y: a[1], team: a[2], arm: a[3] ? 0 : 1 }));
+    this.pickups = s.pk.map(a => ({ x: a[0], y: a[1], z: this.world.terrain(a[0], a[1]), t: a[2], active: !!a[3] }));
+    this.mines = s.m.map(a => ({ x: a[0], y: a[1], z: a[4] !== undefined ? a[4] : this.world.terrain(a[0], a[1]), team: a[2], arm: a[3] ? 0 : 1 }));
     if (s.ev) this.applyEvents(s.ev);
     if (this.state === 'over') this.earned = me.earned + (this.endBonus || 0);
   }
@@ -1319,7 +1375,7 @@ class Game {
         const qx = Math.round(gx / 6) * 6, qy = Math.round(gy / 6) * 6;
         const key = W.navIdx(qx, qy);
         if (key !== B.fieldKey || !B.field) {
-          if ((this.fieldBudgetFrame !== this.frameNo) ) { this.fieldBudgetFrame = this.frameNo; this.fieldBudget = 2; }
+          if ((this.fieldBudgetFrame !== this.frameNo) ) { this.fieldBudgetFrame = this.frameNo; this.fieldBudget = 1; }
           const cached = W.fields.has(W.nearestFree(key));
           if (cached || this.fieldBudget > 0) {
             if (!cached) this.fieldBudget--;
@@ -1360,7 +1416,12 @@ class Game {
     inp.boost = (c.flag >= 0 || (wp.dist > 50 && B.role === 'attack') || B.chase) && Math.abs(da) < 0.25 && c.boost > c.st.boost * 0.3 && sp > 8;
     inp.jump = false;
     if (B.jumpT <= 0 && c.onGround) {
-      if ((B.hurtT > 0 && Math.random() < 0.04 * (diff + 1)) || (B.stuckT > 0.5)) { inp.jump = true; B.jumpT = 1.5; }
+      if ((B.hurtT > 0 && Math.random() < 0.04 * (diff + 1)) || (B.stuckT > 0.5)) {
+        // nicht in Flussnähe springen (sonst landet der Bot im Wasser)
+        let wet = false;
+        for (let k = 0; k < 16 && !wet; k++) { const rr2 = k < 8 ? 15 : 35; wet = W.waterAt(c.x + Math.cos(k * 0.785) * rr2, c.y + Math.sin(k * 0.785) * rr2) !== null; }
+        if (!wet) { inp.jump = true; B.jumpT = 1.5; } else B.jumpT = 1;
+      }
     }
     // Minen legen, wenn verfolgt
     inp.mine = false;
@@ -1468,7 +1529,7 @@ class Game {
     for (const f of this.flags) if (f.state !== 'carried') this.drawFlag(g, f.x, f.y, 0, f.team, time, f.state === 'dropped' ? f.dropT / 25 : -1);
     // Schatten + Bodenfahrzeuge
     const ground = [], air = [];
-    for (const c of this.cars) if (c.alive && vis(c.x, c.y, 8)) (c.z > 0.6 ? air : ground).push(c);
+    for (const c of this.cars) if (c.alive && vis(c.x, c.y, 8)) (c.z - c.groundZ > 0.6 ? air : ground).push(c);
     for (const c of this.cars) if (c.alive && vis(c.x, c.y, 8)) this.drawShadow(g, c);
     for (const c of ground) this.drawCar(g, c, time);
     // Geschosse
@@ -1517,7 +1578,8 @@ class Game {
   }
   drawCar(g, c, time) {
     const cx = this.camR.x, cy = this.camR.y;
-    const k = CAM_H / (CAM_H - c.z - 1);
+    const zr = this.r3d ? c.z : Math.max(0, c.z - this.world.terrain(c.x, c.y));
+    const k = CAM_H / (CAM_H - zr - 1);
     const x = cx + (c.x - cx) * k, y = cy + (c.y - cy) * k;
     const L = c.def.len, Wd = c.def.wid, tm = TEAM[c.team];
     g.save(); g.translate(x, y); g.scale(k, k);
@@ -1591,7 +1653,7 @@ class Game {
     }
     g.restore();
     // getragene Flagge
-    if (c.flag >= 0) this.drawFlag(g, c.x - Math.cos(c.a) * 1.2, c.y - Math.sin(c.a) * 1.2, c.z + 1, c.flag, time, -1);
+    if (c.flag >= 0) this.drawFlag(g, c.x - Math.cos(c.a) * 1.2, c.y - Math.sin(c.a) * 1.2, zr + 1, c.flag, time, -1);
   }
   drawBullets(g, vis) {
     for (const b of this.bullets) {
@@ -1699,8 +1761,10 @@ class Game {
       g.fillStyle = 'rgba(255,255,255,0.12)'; g.beginPath(); g.arc(x - t.r * 0.3, y - t.r * 0.3, t.r * 0.55, 0, 7); g.fill();
     }
   }
-  worldToScreen(x, y, z = 0) {
+  worldToScreen(x, y, z) {
+    if (z === undefined) z = this.world.terrain(x, y);
     if (this.r3d) return this.r3d.project(x, y, z);
+    z = Math.max(0, z - this.world.terrain(x, y));
     const cx = this.camR.x, cy = this.camR.y, k = CAM_H / (CAM_H - z);
     const px = cx + (x - cx) * k, py = cy + (y - cy) * k;
     return { x: (px - cx) * this.Z + this.canvas.width / 2, y: (py - cy) * this.Z + this.canvas.height / 2 };
@@ -1928,7 +1992,7 @@ class Game {
     // Pfeile zu Flaggen außerhalb des Bildes
     for (const f of this.flags) {
       if (f.carrier && f.carrier.isPlayer) continue;
-      const s = this.worldToScreen(f.x, f.y, 0);
+      const s = this.worldToScreen(f.x, f.y);
       if (s.behind) { s.x = SW - s.x; s.y = SH * 3; }
       const mrg = 50 * D;
       if (s.x > mrg && s.y > mrg && s.x < SW - mrg && s.y < SH - mrg) continue;
@@ -1945,7 +2009,7 @@ class Game {
     // Basis-Pfeil, wenn Spieler die Flagge trägt
     if (p.flag >= 0) {
       const b = this.world.bases[p.team];
-      const s = this.worldToScreen(b.x, b.y, 0);
+      const s = this.worldToScreen(b.x, b.y);
       if (s.behind) { s.x = SW - s.x; s.y = SH * 3; }
       const ang = Math.atan2(s.y - SH / 2, s.x - SW / 2);
       const r = Math.min(SW, SH) * 0.16;

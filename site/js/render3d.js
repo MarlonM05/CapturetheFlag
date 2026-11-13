@@ -54,7 +54,7 @@ class Renderer3D {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#a9cbe6');
     this.scene.fog = new THREE.Fog('#a9cbe6', 170, 430);
-    this.camera = new THREE.PerspectiveCamera(42, 1, 1, 1500);
+    this.camera = new THREE.PerspectiveCamera(42, 1, 0.5, 1800);
     this.pitch = 1.1;    // ~63° von oben – weniger Verdeckung durch Häuser
     this.camDist = 125;
     this.ray = new THREE.Raycaster();
@@ -87,36 +87,63 @@ class Renderer3D {
     s.add(sun); s.add(sun.target);
   }
 
-  // ---------------- Boden (aus den 2D-Kacheln) ----------------
+  // ---------------- Boden: Geländenetz mit den 2D-Kacheln als Textur ----------------
   buildGround() {
     const W = this.game.world;
-    const T = Math.ceil(Math.max(W.w, W.h) / 2) + 2;
-    const PX = 2048, Z = PX / T;
+    const T = Math.ceil(Math.max(W.w / 2, W.h / 3)) + 2;      // höchstens 2 × 3 Kacheln
+    const PX = 1536, Z = PX / T;
     W.tiles = new Map(); W.tileZ = Z; W.tileM = T;
     this.groundTex = new Map(); this.dirty = new Set(); this.lastUpload = 0;
     const aniso = this.gl.capabilities.getMaxAnisotropy();
+    const SEG = W.tres || 4;   // Gitterweite = Raster der Höhenkarte
+    // Löcher im Gelände an den Tunnelportalen (sonst sähe man nicht hinein)
+    const portals = [];
+    for (const tn of W.tunnels) { const q = tn.p; portals.push([q[0], q[1]], [q[q.length - 3], q[q.length - 2]]); }
+    const hole = (x, y) => {
+      if (!portals.length) return false;
+      const t = W.tunnelAt(x, y);
+      if (!t) return false;
+      if (W.terrain(x, y) < t.floor + 1.5) return false;
+      return portals.some(([px, py]) => (x - px) ** 2 + (y - py) ** 2 < 26 * 26);
+    };
     for (let ty = 0; ty * T < W.h; ty++) for (let tx = 0; tx * T < W.w; tx++) {
       const cv = W.renderTile(tx, ty, Z, { px: PX, flat3d: true });
       W.tiles.set(tx + ',' + ty, cv);
       const tex = this.track(new THREE.CanvasTexture(cv));
       tex.anisotropy = aniso;
       this.groundTex.set(tx + ',' + ty, tex);
-      const m = new THREE.Mesh(this.track(new THREE.PlaneGeometry(T, T)), this.mat({ map: tex }));
-      m.rotation.x = -Math.PI / 2;
-      m.position.set(tx * T + T / 2, 0, ty * T + T / 2);
-      m.receiveShadow = true;
+      const n = Math.ceil(T / SEG), x0 = tx * T, y0 = ty * T;
+      const pos = new Float32Array((n + 1) * (n + 1) * 3), uv = new Float32Array((n + 1) * (n + 1) * 2);
+      for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
+        const k = j * (n + 1) + i, x = x0 + i * T / n, y = y0 + j * T / n;
+        pos[k * 3] = x; pos[k * 3 + 1] = W.terrain(x, y); pos[k * 3 + 2] = y;
+        uv[k * 2] = i / n; uv[k * 2 + 1] = 1 - j / n;
+      }
+      const idx = [];
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const a = j * (n + 1) + i, b = a + 1, c = a + n + 1, d = c + 1;
+        if (hole(x0 + (i + 0.5) * T / n, y0 + (j + 0.5) * T / n)) continue;
+        idx.push(a, c, b, b, c, d);
+      }
+      const g = this.track(new THREE.BufferGeometry());
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, this.mat({ map: tex }));
+      m.receiveShadow = true; m.castShadow = true;
       this.scene.add(m);
     }
     W.onDecal = (tx, ty) => this.dirty.add(tx + ',' + ty);
     // Umland
-    const out = new THREE.Mesh(this.track(new THREE.PlaneGeometry(4000, 4000)), this.mat({ color: '#4c5a3d' }));
-    out.rotation.x = -Math.PI / 2; out.position.set(W.w / 2, -0.08, W.h / 2);
+    const out = new THREE.Mesh(this.track(new THREE.PlaneGeometry(5000, 5000)), this.mat({ color: '#4c5a3d' }));
+    out.rotation.x = -Math.PI / 2; out.position.set(W.w / 2, -2.5, W.h / 2);
     this.scene.add(out);
-    // Wasser als glänzende Fläche
+    // Wasser als glänzende Fläche in Höhe des Wasserspiegels
     for (const w of W.water) {
-      const geo = this.polyGeo(w.p, 0.06);
+      const geo = this.polyGeo(w.p, w.z + 0.05);
       if (!geo) continue;
-      const m = new THREE.Mesh(geo, this.mat({ color: '#2f6db0', specular: '#cfe6ff', shininess: 90, transparent: true, opacity: 0.82 }, 'Phong'));
+      const m = new THREE.Mesh(geo, this.mat({ color: '#2f6db0', specular: '#cfe6ff', shininess: 90, transparent: true, opacity: 0.85 }, 'Phong'));
       m.receiveShadow = true;
       this.scene.add(m);
     }
@@ -201,7 +228,8 @@ class Renderer3D {
     const tri = (B, a, b, c, col, ua, ub, uc) => { put(B, a, col, ua); put(B, b, col, ub); put(B, c, col, uc); };
     const FW = 6, FH = 6.4;  // Fassaden-Kachel in Metern
     for (const b of this.game.world.buildings) {
-      const p = b.p, n = p.length / 2, h = b.h;
+      if (b.lm) continue;   // Wahrzeichen haben eigene Modelle
+      const p = b.p, n = p.length / 2, h = b.top, z0 = b.base;
       const wc = R3.col(b.wall), rc = R3.col(b.roof);
       // Wände
       let run = 0;
@@ -209,10 +237,10 @@ class Renderer3D {
         const j = (i + 1) % n;
         const ax = p[i * 2], ay = p[i * 2 + 1], bx = p[j * 2], by = p[j * 2 + 1];
         const L = Math.hypot(bx - ax, by - ay);
-        const u0 = run / FW, u1 = (run + L) / FW, v1 = h / FH;
+        const u0 = run / FW, u1 = (run + L) / FW, v0 = 0, v1 = (h - z0) / FH;
         run += L;
-        tri(wall, [ax, 0, ay], [bx, 0, by], [bx, h, by], wc, [u0, 0], [u1, 0], [u1, v1]);
-        tri(wall, [ax, 0, ay], [bx, h, by], [ax, h, ay], wc, [u0, 0], [u1, v1], [u0, v1]);
+        tri(wall, [ax, z0, ay], [bx, z0, by], [bx, h, by], wc, [u0, v0], [u1, v0], [u1, v1]);
+        tri(wall, [ax, z0, ay], [bx, h, by], [ax, h, ay], wc, [u0, v0], [u1, v1], [u0, v1]);
       }
       // Dach
       if (!b.flat && n === 4) {
@@ -229,7 +257,7 @@ class Renderer3D {
         tri(roofB, q(p0), q(p1), r1, rc, [0, 0], [ridge, 0], [ridge, slope]); tri(roofB, q(p0), r1, r0, rc, [0, 0], [ridge, slope], [0, slope]);
         tri(roofB, q(p2), q(p3), r0, dark, [0, 0], [ridge, 0], [ridge, slope]); tri(roofB, q(p2), r0, r1, dark, [0, 0], [ridge, slope], [0, slope]);
         // Giebel (Wandfarbe, ohne Fenster)
-        const gv = h / FH, gt = rh / FH;
+        const gv = (h - z0) / FH, gt = (rh - z0) / FH;
         tri(wall, q(p3), q(p0), r0, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
         tri(wall, q(p1), q(p2), r1, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
       } else if (!b.flat && n <= 10 && this.convex(p)) {
@@ -270,12 +298,26 @@ class Renderer3D {
     };
     mk(wall, T.facade); mk(roofB, T.roof);
     this.buildRoads();
+    this.buildDecks();
+    this.buildRails();
+    this.buildTunnels();
+    this.buildLandmarks();
   }
 
   // ---------------- Straßen als echte Bänder (scharf auch aus der Nähe) ----------------
-  ribbon(B, flat, w, y, uScale, offset = 0) {
+  ribbon(B, flat0, w, y, uScale, offset = 0) {
+    // Polylinie verdichten, damit das Band dem Gelände folgt
+    const flat = [];
+    for (let i = 0; i + 1 < flat0.length; i += 2) {
+      const x = flat0[i], yy = flat0[i + 1];
+      if (i + 3 < flat0.length) {
+        const nx = flat0[i + 2], ny = flat0[i + 3], L = Math.hypot(nx - x, ny - yy), k = Math.max(1, Math.ceil(L / 5));
+        for (let s = 0; s < k; s++) flat.push(x + (nx - x) * s / k, yy + (ny - yy) * s / k);
+      } else flat.push(x, yy);
+    }
     const n = flat.length / 2;
     if (n < 2) return;
+    const W = this.game.world;
     const P = i => [flat[i * 2], flat[i * 2 + 1]];
     const norms = [];
     for (let i = 0; i < n; i++) {
@@ -297,7 +339,7 @@ class Renderer3D {
     for (let i = 0; i < n - 1; i++) {
       const a = P(i), b = P(i + 1), na = norms[i], nb = norms[i + 1];
       const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      const off = (pt, nn, s) => [pt[0] + nn[0] * (offset + s * w / 2), y, pt[1] + nn[1] * (offset + s * w / 2)];
+      const off = (pt, nn, s) => { const x = pt[0] + nn[0] * (offset + s * w / 2), z = pt[1] + nn[1] * (offset + s * w / 2); return [x, W.terrain(x, z) + y, z]; };
       const al = off(a, na, 1), ar = off(a, na, -1), bl = off(b, nb, 1), br = off(b, nb, -1);
       const u0 = u / uScale, u1 = (u + L) / uScale;
       B.pos.push(...al, ...ar, ...br, ...al, ...br, ...bl);
@@ -312,7 +354,9 @@ class Renderer3D {
     for (const r of W.roads) {
       if (r.k > 2) continue;
       if (r.k === 2) { this.ribbon(L.foot, r.p, Math.min(r.w, 5), 0.035, 2.2); continue; }
-      this.ribbon(L.side, r.p, r.w + 3.2, 0.03, 2.2);
+      // Gehwege als zwei schmale Streifen (folgen dem Gelände sauber, auch in Einschnitten)
+      this.ribbon(L.side, r.p, 1.8, 0.03, 2.2, r.w / 2 + 0.85);
+      this.ribbon(L.side, r.p, 1.8, 0.03, 2.2, -r.w / 2 - 0.85);
       this.ribbon(L.asph, r.p, r.w, 0.07, 8);
       this.ribbon(L.curb, r.p, 0.3, 0.1, 2, r.w / 2 + 0.1);
       this.ribbon(L.curb, r.p, 0.3, 0.1, 2, -r.w / 2 - 0.1);
@@ -353,11 +397,164 @@ class Renderer3D {
       const head = new THREE.InstancedMesh(this.track(new THREE.BoxGeometry(1.2, 0.25, 0.45)), this.mat({ color: '#fff6d0', emissive: '#8a7d40' }), lamps.length);
       const d = this.dummy;
       lamps.forEach(([x, y, a], i) => {
-        d.position.set(x, 2.75, y); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); d.updateMatrix(); pole.setMatrixAt(i, d.matrix);
-        d.position.set(x + Math.cos(a) * 0.5, 5.5, y + Math.sin(a) * 0.5); d.rotation.set(0, -a, 0); d.updateMatrix(); head.setMatrixAt(i, d.matrix);
+        const gz = W.terrain(x, y);
+        d.position.set(x, gz + 2.75, y); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); d.updateMatrix(); pole.setMatrixAt(i, d.matrix);
+        d.position.set(x + Math.cos(a) * 0.5, gz + 5.5, y + Math.sin(a) * 0.5); d.rotation.set(0, -a, 0); d.updateMatrix(); head.setMatrixAt(i, d.matrix);
       });
       pole.castShadow = true;
       this.scene.add(pole, head);
+    }
+  }
+  // ---------------- Brücken mit Geländer und Pfeilern ----------------
+  buildDecks() {
+    const W = this.game.world, T = this.makeTextures();
+    const concrete = this.mat({ color: '#b9b5ad' }), rail = this.mat({ color: '#d0d3d6' }), asph = this.mat({ map: T.asphalt, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    for (const d of W.decks) {
+      const ang = Math.atan2(d.uy, d.ux), z = Math.max(d.az, d.bz), mx = (d.ax + d.bx) / 2, my = (d.ay + d.by) / 2;
+      const grp = new THREE.Group(); grp.position.set(mx, z, my); grp.rotation.y = -ang;
+      const slab = new THREE.Mesh(this.track(new THREE.BoxGeometry(d.L + 0.6, 1.2, d.w)), concrete); slab.position.y = -0.6; grp.add(slab);
+      const road = new THREE.Mesh(this.track(new THREE.PlaneGeometry(d.L, d.w - 2.2)), asph); road.rotation.x = -Math.PI / 2; road.position.y = 0.04; grp.add(road);
+      road.geometry.attributes.uv.array.forEach((v, i, a) => { if (i % 2 === 0) a[i] = v * d.L / 8; });
+      for (const sgn of [1, -1]) {
+        const r = new THREE.Mesh(this.track(new THREE.BoxGeometry(d.L, 1.1, 0.3)), rail); r.position.set(0, 0.55, sgn * (d.w / 2 - 0.15)); grp.add(r);
+        const curb = new THREE.Mesh(this.track(new THREE.BoxGeometry(d.L, 0.25, 1.0)), concrete); curb.position.set(0, 0.12, sgn * (d.w / 2 - 0.6)); grp.add(curb);
+        // Pfeiler an beiden Enden
+        for (const t of [-0.42, 0.42]) {
+          const px = mx + d.ux * d.L * t + -d.uy * sgn * (d.w / 2 - 1.2), py = my + d.uy * d.L * t + d.ux * sgn * (d.w / 2 - 1.2);
+          const gz = W.terrain(px, py), hgt = z - 1.2 - gz + 1;
+          if (hgt < 0.5) continue;
+          const pil = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.7, 0.8, hgt, 10)), concrete);
+          pil.position.set(d.L * t, -1.2 - hgt / 2 + 0.5, sgn * (d.w / 2 - 1.2)); grp.add(pil);
+        }
+      }
+      grp.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      this.scene.add(grp);
+    }
+  }
+
+  // ---------------- Leitplanken an den Brückendämmen ----------------
+  buildRails() {
+    const W = this.game.world, m = this.mat({ color: '#d0d3d6' }), post = this.mat({ color: '#8a8d90' });
+    for (const r of W.rails) {
+      const L = Math.hypot(r.bx - r.ax, r.by - r.ay); if (L < 1) continue;
+      const g = new THREE.Mesh(this.track(new THREE.BoxGeometry(L, 0.35, 0.18)), m);
+      g.position.set((r.ax + r.bx) / 2, (r.az + r.bz) / 2 + 0.8, (r.ay + r.by) / 2);
+      g.rotation.order = 'YZX'; g.rotation.y = -Math.atan2(r.by - r.ay, r.bx - r.ax); g.rotation.z = Math.atan2(r.bz - r.az, L);
+      g.castShadow = true; this.scene.add(g);
+      for (let d = 0; d <= L; d += 4) {
+        const t = d / L, p = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.15, 0.9, 0.15)), post);
+        p.position.set(r.ax + (r.bx - r.ax) * t, r.az + (r.bz - r.az) * t + 0.45, r.ay + (r.by - r.ay) * t); this.scene.add(p);
+      }
+    }
+  }
+
+  // ---------------- Tunnel: Röhre mit Licht und Portalen ----------------
+  buildTunnels() {
+    const W = this.game.world, T = this.makeTextures();
+    const wallM = this.mat({ color: '#8f8a80', emissive: '#2e2b26', side: THREE.DoubleSide });
+    const ceilM = this.mat({ color: '#6c6862', emissive: '#1e1c19', side: THREE.DoubleSide });
+    const roadM = this.mat({ map: T.asphalt, emissive: '#1a1a1a' });
+    const lampM = this.mat({ color: '#fff3c4', emissive: '#ffe08a' });
+    const rockM = this.mat({ color: '#6f6a5c' });
+    for (const tn of W.tunnels) {
+      const wall = [], ceil = [], road = [], ruv = [];
+      const hw = tn.w / 2, H = tn.hgt;
+      let acc = 0;
+      for (const sg of tn.segs) {
+        const ux = (sg.bx - sg.ax) / sg.L, uy = (sg.by - sg.ay) / sg.L, nx = -uy * hw, ny = ux * hw;
+        const A = [sg.ax, sg.az, sg.ay], B = [sg.bx, sg.bz, sg.by];
+        const P = (pt, s, h) => [pt[0] + nx * s, pt[1] + h, pt[2] + ny * s];
+        for (const s of [1, -1]) {
+          const a0 = P(A, s, 0), b0 = P(B, s, 0), a1 = P(A, s, H), b1 = P(B, s, H);
+          wall.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+        }
+        const l0 = P(A, 1, H), r0 = P(A, -1, H), l1 = P(B, 1, H), r1 = P(B, -1, H);
+        ceil.push(...l0, ...l1, ...r1, ...l0, ...r1, ...r0);
+        const fl0 = P(A, 0.86, 0.06), fr0 = P(A, -0.86, 0.06), fl1 = P(B, 0.86, 0.06), fr1 = P(B, -0.86, 0.06);
+        road.push(...fl0, ...fr0, ...fr1, ...fl0, ...fr1, ...fl1);
+        const u0 = acc / 8, u1 = (acc + sg.L) / 8; acc += sg.L;
+        ruv.push(u0, 1, u0, 0, u1, 0, u0, 1, u1, 0, u1, 1);
+        // Lampen an der Decke
+        for (let d = 6; d < sg.L; d += 14) {
+          const lamp = new THREE.Mesh(this.track(new THREE.BoxGeometry(2.4, 0.2, 0.5)), lampM);
+          lamp.position.set(sg.ax + ux * d, sg.az + (sg.bz - sg.az) * d / sg.L + H - 0.15, sg.ay + uy * d);
+          lamp.rotation.y = -Math.atan2(uy, ux);
+          this.scene.add(lamp);
+        }
+      }
+      const mk = (arr, m, uvs) => {
+        const g = this.track(new THREE.BufferGeometry());
+        g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+        if (uvs) g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        g.computeVertexNormals();
+        const mesh = new THREE.Mesh(g, m); mesh.receiveShadow = true; this.scene.add(mesh); return mesh;
+      };
+      mk(wall, wallM); mk(ceil, ceilM).castShadow = true; mk(road, roadM, ruv);
+      // Portale: Betonrahmen und Stützmauer bis zum Hang
+      const ends = [[tn.segs[0].ax, tn.segs[0].ay, tn.segs[0].az, tn.segs[0]], [tn.segs[tn.segs.length - 1].bx, tn.segs[tn.segs.length - 1].by, tn.segs[tn.segs.length - 1].bz, tn.segs[tn.segs.length - 1]]];
+      for (const [x, y, z, sg] of ends) {
+        const ang = Math.atan2(sg.by - sg.ay, sg.bx - sg.ax);
+        const grp = new THREE.Group(); grp.position.set(x, z, y); grp.rotation.y = -ang;
+        const top = Math.max(H + 2, W.terrain(x, y) - z + 2, 12);
+        const lintel = new THREE.Mesh(this.track(new THREE.BoxGeometry(1.6, top - H, tn.w + 3)), rockM); lintel.position.set(0, H + (top - H) / 2, 0); grp.add(lintel);
+        for (const sgn of [1, -1]) {
+          const side = new THREE.Mesh(this.track(new THREE.BoxGeometry(1.6, top, 9)), rockM); side.position.set(0, top / 2, sgn * (hw + 4.5)); grp.add(side);
+        }
+        const frame = new THREE.Mesh(this.track(new THREE.BoxGeometry(1.8, 1.2, tn.w + 1)), this.mat({ color: '#d8d2c4' })); frame.position.set(0, H + 0.4, 0); grp.add(frame);
+        grp.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+        this.scene.add(grp);
+      }
+    }
+  }
+
+  // ---------------- Wahrzeichen (einfache, erkennbare Formen) ----------------
+  buildLandmarks() {
+    const W = this.game.world;
+    const M = c => this.mat({ color: c });
+    const white = M('#f4f0e6'), cream = M('#ece0c4'), sand = M('#e2d2ae'), copper = M('#5f9e8a'), roofRed = M('#9a4a36'), roofDark = M('#6b5248'), stone = M('#a59d8c');
+    const box = (g, w, h, d, m, x, y, z) => { const o = new THREE.Mesh(this.track(new THREE.BoxGeometry(w, h, d)), m); o.position.set(x, y + h / 2, z); g.add(o); return o; };
+    const cyl = (g, r1, r2, h, seg, m, x, y, z) => { const o = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r1, r2, h, seg)), m); o.position.set(x, y + h / 2, z); g.add(o); return o; };
+    const dome = (g, r, m, x, y, z, sy = 1) => { const o = new THREE.Mesh(this.track(new THREE.SphereGeometry(r, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2)), m); o.position.set(x, y, z); o.scale.y = sy; g.add(o); return o; };
+    const prism = (g, L, w, h, m, x, y, z) => {   // Satteldach entlang x
+      const geo = this.track(new THREE.BufferGeometry());
+      const a = L / 2, b = w / 2;
+      const v = [-a, 0, -b, a, 0, -b, a, h, 0, -a, 0, -b, a, h, 0, -a, h, 0, -a, 0, b, -a, h, 0, a, h, 0, -a, 0, b, a, h, 0, a, 0, b, -a, 0, -b, -a, h, 0, -a, 0, b, a, 0, -b, a, 0, b, a, h, 0];
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); geo.computeVertexNormals();
+      const o = new THREE.Mesh(geo, m); o.material.side = THREE.DoubleSide; o.position.set(x, y, z); g.add(o); return o;
+    };
+    for (const lm of W.landmarks) {
+      const g = new THREE.Group();
+      g.position.set(lm.x, W.terrain(lm.x, lm.y) - 0.5, lm.y); g.rotation.y = -lm.a;
+      if (lm.t === 'basilika') {
+        // Basilika St. Martin: weiße Barockfassade, Doppeltürme, Kuppel über der Vierung
+        box(g, 100, 24.5, 26, white, 0, 0, 0); prism(g, 100, 26, 9, roofDark, 0, 24.5, 0);
+        box(g, 24, 24.5, 46, white, 12, 0, 0);
+        const tr = prism(g, 46, 24, 8.5, roofDark, 12, 24.5, 0); tr.rotation.y = Math.PI / 2;
+        cyl(g, 8.5, 8.5, 9, 16, white, 12, 26, 0); dome(g, 8.6, copper, 12, 35, 0, 1.15);
+        cyl(g, 1.8, 1.8, 4, 8, white, 12, 44.5, 0); cyl(g, 0, 1.9, 3, 8, copper, 12, 48.5, 0);
+        for (const zz of [-14, 14]) {
+          box(g, 11, 44, 11, white, -46, 0, zz); box(g, 9, 7, 9, cream, -46, 44, zz);
+          dome(g, 4.8, copper, -46, 51, zz, 1.4); cyl(g, 0.9, 0.9, 3, 8, copper, -46, 57.5, zz); cyl(g, 0, 1.1, 2.5, 8, copper, -46, 60.5, zz);
+        }
+        box(g, 2, 30, 18, cream, -51, 0, 0);             // Fassade zwischen den Türmen
+        const ped = prism(g, 18, 2.5, 6, cream, -51, 30, 0); ped.rotation.y = Math.PI / 2;
+      } else if (lm.t === 'blaserturm') {
+        // Blaserturm am Marienplatz: Quaderschaft, achteckiger Aufsatz, grüne Haube
+        box(g, 8, 36, 8, sand, 0, 0, 0); box(g, 8.6, 1, 8.6, stone, 0, 36, 0);
+        cyl(g, 4.2, 4.4, 8, 8, white, 0, 37, 0); dome(g, 4.2, copper, 0, 45, 0, 1.3);
+        cyl(g, 0.8, 0.8, 2.5, 8, copper, 0, 50.4, 0); cyl(g, 0, 0.9, 2.2, 8, copper, 0, 52.9, 0);
+      } else if (lm.t === 'mehlsack') {
+        // Mehlsack: weißer Rundturm
+        cyl(g, 6.0, 6.3, 46, 18, white, 0, 0, 0); cyl(g, 6.5, 6.5, 1, 18, stone, 0, 46, 0); cyl(g, 0, 6.6, 5, 18, roofDark, 0, 47, 0);
+        for (let k = 0; k < 4; k++) { const sl = box(g, 0.6, 2.2, 1.0, roofDark, Math.cos(k * 1.57) * 6.05, 30 + (k % 2) * 6, Math.sin(k * 1.57) * 6.05); sl.rotation.y = -k * 1.57; }
+      } else if (lm.t === 'veitsburg') {
+        // Veitsburg: Schlösschen mit Turm auf dem Hügel
+        box(g, 30, 13, 13, cream, 0, 0, 0); prism(g, 30, 13, 6, roofRed, 0, 13, 0);
+        box(g, 7, 24, 7, cream, -11, 0, -4); cyl(g, 0, 5.4, 6, 4, roofRed, -11, 24, -4).rotation.y = Math.PI / 4;
+        for (const [x, z, w, d] of [[0, 16, 44, 1.2], [0, -16, 44, 1.2], [22, 0, 1.2, 32], [-22, 0, 1.2, 32]]) box(g, w, 3, d, stone, x, -1, z);
+      }
+      g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      this.scene.add(g);
     }
   }
   convex(p) {
@@ -375,16 +572,17 @@ class Renderer3D {
 
   // ---------------- Bäume ----------------
   buildTrees() {
-    const T = this.game.world.trees;
+    const T = this.game.world.trees, Wt = this.game.world;
     if (!T.length) return;
     const trunk = new THREE.InstancedMesh(this.track(new THREE.CylinderGeometry(0.22, 0.32, 1, 6)), this.mat({ color: '#5b4630' }), T.length);
     const crown = new THREE.InstancedMesh(this.track(new THREE.IcosahedronGeometry(1, 1)), this.mat({ color: '#ffffff', flatShading: true }), T.length);
     const shades = ['#3f7a35', '#4b8a3a', '#36702f'];
     const d = this.dummy;
     T.forEach((t, i) => {
-      d.position.set(t.x, t.h * 0.3, t.y); d.rotation.set(0, 0, 0); d.scale.set(1, t.h * 0.6, 1); d.updateMatrix();
+      const gz = Wt.terrain(t.x, t.y);
+      d.position.set(t.x, gz + t.h * 0.3, t.y); d.rotation.set(0, 0, 0); d.scale.set(1, t.h * 0.6, 1); d.updateMatrix();
       trunk.setMatrixAt(i, d.matrix);
-      d.position.set(t.x, t.h * 0.68, t.y); d.rotation.set(0, i, 0); d.scale.set(t.r, t.r * 1.15, t.r); d.updateMatrix();
+      d.position.set(t.x, gz + t.h * 0.68, t.y); d.rotation.set(0, i, 0); d.scale.set(t.r, t.r * 1.15, t.r); d.updateMatrix();
       crown.setMatrixAt(i, d.matrix);
       crown.setColorAt(i, R3.col(shades[t.hue]));
     });
@@ -416,17 +614,18 @@ class Renderer3D {
       g.addGroup(0, 6, 0); g.addGroup(6, 12, 1);
       g.computeVertexNormals();
       const m = new THREE.Mesh(g, [Object.assign(rampMat, { side: THREE.DoubleSide }), Object.assign(sideMat, { side: THREE.DoubleSide })]);
-      m.position.set(r.x, 0, r.y); m.rotation.y = -r.a;
+      m.position.set(r.x, W.terrain(r.x, r.y) - 0.05, r.y); m.rotation.y = -r.a;
       m.castShadow = true; m.receiveShadow = true;
       this.scene.add(m);
     }
     // Basen: leuchtende Ringe
     W.bases.forEach((b, i) => {
       const ring = new THREE.Mesh(this.track(new THREE.RingGeometry(10.2, 11.2, 48)), this.track(new THREE.MeshBasicMaterial({ color: TEAM[i].color, transparent: true, opacity: 0.85, side: THREE.DoubleSide })));
-      ring.rotation.x = -Math.PI / 2; ring.position.set(b.x, 0.08, b.y);
+      const bz = W.terrain(b.x, b.y);
+      ring.rotation.x = -Math.PI / 2; ring.position.set(b.x, bz + 0.12, b.y);
       this.scene.add(ring);
       const glow = new THREE.Mesh(this.track(new THREE.CylinderGeometry(11, 11, 3, 48, 1, true)), this.track(new THREE.MeshBasicMaterial({ color: TEAM[i].color, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })));
-      glow.position.set(b.x, 1.5, b.y);
+      glow.position.set(b.x, bz + 1.5, b.y);
       this.scene.add(glow);
     });
     // Kisten
@@ -435,7 +634,7 @@ class Renderer3D {
     this.props = this.game.props.map(p => {
       const m = new THREE.Mesh(boxG, propMats[p.t]);
       m.scale.set(p.hw * 2, p.h, p.hh * 2);
-      m.position.set(p.x, p.h / 2, p.y); m.rotation.y = -p.a;
+      m.position.set(p.x, p.z + p.h / 2, p.y); m.rotation.y = -p.a;
       m.castShadow = true; m.receiveShadow = true;
       this.scene.add(m);
       return m;
@@ -605,13 +804,23 @@ class Renderer3D {
       // Drohne: knapp hinter und über dem Auto, steigt über Häuser im Weg
       const yaw = G.camYaw, fx = Math.cos(yaw), fy = Math.sin(yaw);
       const back = 12.5 / G.zoomMul, up = 5.2 / G.zoomMul;
+      const Wd = G.world;
       let need = cz + up;
+      // im Tunnel / unter einer Brücke: unter der Decke bleiben und näher ran
+      const inTun = Wd.tunnelAt(cx, cy), under = Wd.ceilingAt(cx, cy, cz);
+      let bk = back;
+      if (inTun && cz < inTun.ceil - 0.5) bk = Math.min(back, 8);
       for (let s = 0.2; s <= 1.001; s += 0.2) {
-        const b = G.world.buildingAt(cx - fx * back * s, cy - fy * back * s);
-        if (b) need = Math.max(need, b.h + (b.flat ? 2.5 : 6));
+        const sx2 = cx - fx * bk * s, sy2 = cy - fy * bk * s;
+        const b = Wd.buildingAt(sx2, sy2);
+        if (b) need = Math.max(need, b.top + (b.flat ? 2.5 : 6));
+        const tnS = Wd.tunnelAt(sx2, sy2);
+        if (!(inTun && tnS)) need = Math.max(need, Wd.terrain(sx2, sy2) + 2.5);
       }
+      if (inTun && cz < inTun.ceil - 0.5) need = Math.min(need, inTun.ceil - 0.8);
+      else if (under !== null) need = Math.min(need, under - 0.6);
       this.camH = this.camH == null ? need : this.camH + (need - this.camH) * Math.min(1, (dt || 0.016) * (need > this.camH ? 6 : 2.5));
-      cam.position.set(cx - fx * back, this.camH, cy - fy * back);
+      cam.position.set(cx - fx * bk, this.camH, cy - fy * bk);
       cam.lookAt(cx + fx * 10, cz + 1.4, cy + fy * 10);
       if (cam.fov !== 68) { cam.fov = 68; cam.updateProjectionMatrix(); this.updatePointScale(); }
       cam.updateMatrixWorld();
@@ -654,7 +863,7 @@ class Renderer3D {
   render(dt, time) {
     const G = this.game;
     const sx = (Math.random() - 0.5) * G.shake * 0.9, sy = (Math.random() - 0.5) * G.shake * 0.9;
-    const pz = G.player && G.player.alive ? Math.min(G.player.z, 8) * 0.6 : 0;
+    const pz = G.player && G.player.alive ? G.player.z : G.world.terrain(G.cam.x, G.cam.y);
     this.placeCamera(G.cam.x + sx * (G.camMode === 'chase' ? 0.3 : 1), G.cam.y + sy * (G.camMode === 'chase' ? 0.3 : 1), G.camMode === 'chase' && G.player ? G.player.z : pz, dt);
     // sichtbarer Bereich (für Minikarte)
     const pts = [[0, 0], [innerWidth, 0], [0, innerHeight], [innerWidth, innerHeight]].map(([x, y]) => this.screenToGround(x, y));
@@ -673,9 +882,14 @@ class Renderer3D {
       m.root.visible = vis;
       if (!c.alive) continue;
       m.root.position.set(c.x, c.z, c.y);
+      m.root.rotation.order = 'YZX';
       m.root.rotation.y = -c.a;
-      // leichtes Kippen in der Luft
-      m.root.rotation.z = c.onGround === false ? clamp(c.vz * 0.02, -0.25, 0.25) : 0;
+      // am Hang kippen (Nicken + Rollen), in der Luft leicht nach Flugbahn
+      const ca = Math.cos(c.a), sa = Math.sin(c.a), sxs = c.slopeX || 0, sys = c.slopeY || 0;
+      const pitch = c.onGround === false ? clamp(c.vz * 0.02, -0.3, 0.3) : Math.atan(sxs * ca + sys * sa);
+      const roll = c.onGround === false ? 0 : -Math.atan(-sxs * sa + sys * ca);
+      m.pitch = (m.pitch || 0) + (pitch - (m.pitch || 0)) * 0.25; m.roll = (m.roll || 0) + (roll - (m.roll || 0)) * 0.25;
+      m.root.rotation.z = m.pitch; m.root.rotation.x = m.roll;
       m.turret.rotation.y = -(c.turret - c.a);
       // Gesicht immer „aufrecht“ zur Kamera
       m.face.rotation.y = c.a - Math.PI / 2 - (G.camMode === 'chase' ? G.camYaw : -Math.PI / 2);
@@ -693,7 +907,7 @@ class Renderer3D {
       const grp = this.flags[i];
       grp.visible = f.state !== 'carried';
       if (!grp.visible) return;
-      grp.position.set(f.x, 0, f.y);
+      grp.position.set(f.x, f.z !== undefined ? f.z : G.world.terrain(f.x, f.y), f.y);
       grp.userData.cloth.rotation.y = Math.sin(time * 4 + i) * 0.4;
       grp.scale.setScalar(f.state === 'dropped' ? 0.8 + Math.sin(time * 8) * 0.06 : 1);
     });
@@ -708,7 +922,7 @@ class Renderer3D {
       o.visible = true;
       o.userData.meshes.forEach((mm, k) => { mm.visible = k === p.t; });
       o.userData.cross.forEach(cr => { cr.visible = p.t === 0; });
-      o.position.set(p.x, 1.2 + Math.sin(time * 3 + p.x) * 0.25, p.y);
+      o.position.set(p.x, (p.z !== undefined ? p.z : G.world.terrain(p.x, p.y)) + 1.2 + Math.sin(time * 3 + p.x) * 0.25, p.y);
       o.rotation.set(p.t === 2 ? Math.PI / 2 : 0, time * 1.5, 0);
       n++;
     }
@@ -718,7 +932,7 @@ class Renderer3D {
     for (const mi of G.mines) {
       let o = this.pool.mine[n];
       if (!o) { o = new THREE.Group(); o.add(new THREE.Mesh(this.mineGeo, this.mineMat)); const l = new THREE.Mesh(this.mineLight, this.track(new THREE.MeshBasicMaterial({ color: '#f00' }))); l.position.y = 0.25; o.userData.light = l; o.add(l); this.scene.add(o); this.pool.mine[n] = o; }
-      o.visible = true; o.position.set(mi.x, 0.15, mi.y);
+      o.visible = true; o.position.set(mi.x, (mi.z !== undefined ? mi.z : G.world.terrain(mi.x, mi.y)) + 0.15, mi.y);
       o.userData.light.material.color.set(mi.arm > 0 ? '#888' : (Math.sin(time * 10) > 0 ? TEAM[mi.team].color : '#222'));
       n++;
     }
@@ -751,7 +965,8 @@ class Renderer3D {
     for (const p of this.game.particles.list) {
       if (!!p.add !== add || p.type === 'text' || i >= 1700) continue;
       const f = p.life / p.max;
-      const h = p.z !== undefined ? p.z + 0.4 : (p.type === 'spark' ? 1 : p.add ? 1.2 : 1.5);
+      const gz = p.gz !== undefined ? p.gz : (p.gz = this.game.world.terrain(p.x, p.y));
+      const h = gz + (p.z !== undefined ? p.z + 0.4 : (p.type === 'spark' ? 1 : p.add ? 1.2 : 1.5));
       P[i * 3] = p.x; P[i * 3 + 1] = h; P[i * 3 + 2] = p.y;
       const c = R3.col(p.color);
       C[i * 3] = c.r; C[i * 3 + 1] = c.g; C[i * 3 + 2] = c.b;

@@ -1,8 +1,7 @@
 # Schussental Showdown 🚩🚗💥
 
-Ein Browser-Autospiel im Capture-the-Flag-Stil: zwei Teams, Springen, Turbo, Minen, Rampen –
-gespielt auf echten Stadtplänen von **Ravensburg** (Altstadt & Marienplatz), **Weingarten**
-(Basilika) und **Friedrichshafen** (Hafen & Bodensee).
+Ein Browser-Autospiel im Capture-the-Flag-Stil: zwei Teams, Springen, Nitro-Flug, Drift, Minen, Rampen –
+auf einer zusammenhängenden 3D-Karte **Ravensburg – Weingarten** aus echten OpenStreetMap-Stadtplänen.
 
 ## Spielen & online stellen
 **Variante A – GitHub Pages (wie Make-It-Meme):**
@@ -71,7 +70,7 @@ einen schnellen WebRTC-Kanal ohne Nachsenden (kein Stau bei Paketverlust), Ereig
 | `site/js/net.js` | Online-Modus (Supabase-Räume + WebRTC) |
 | `site/js/render3d.js` | 3D-Ansicht (Three.js) |
 | `site/js/vendor/` | Three.js r149 und supabase-js 2.118 (beide MIT-Lizenz) |
-| `tools/build_maps.py` | Erzeugt `maps.js` aus OSM-Exporten (`pip install shapely scipy numpy pillow`) |
+| `tools/build_world.py` | Erzeugt die Karte Schussental (nutzt `tools/build_maps.py` für die Städte) |
 
 ## Autos
 | Auto | Stärke | Waffe |
@@ -85,9 +84,24 @@ einen schnellen WebRTC-Kanal ohne Nachsenden (kein Stau bei Paketverlust), Ereig
 Jedes Auto hat 6 Upgrades (Motor, Panzerung, Waffe, Feuerrate, Turbo, Sprungfeder) mit je 5 Stufen.
 Bezahlt wird mit „Kohle“ aus Matches (Abschüsse, Flaggen, Siege). Der Spielstand liegt im Browser (localStorage).
 
-## Neue Stadt hinzufügen
-1. OSM-Ausschnitt laden: `https://api.openstreetmap.org/api/0.6/map?bbox=<minLon>,<minLat>,<maxLon>,<maxLat>` (ca. 800 × 650 m) als `<id>.osm` speichern.
-2. Eintrag in `MAPS` in `tools/build_maps.py` ergänzen (Name, bbox, Basen in Metern).
-3. `python3 tools/build_maps.py <osm-ordner> site/js/maps.js`
+## Die Karte „Schussental“
+- **Weingarten** (Norden/Osten, **Team Rot**, Basis Münsterplatz vor der Basilika) und **Ravensburg** (Süden/Westen,
+  **Team Blau**, Basis Marienplatz am Blaserturm), verbunden durchs Schussental.
+- **Gelände** mit Höhen: Martinsberg mit der Basilika, Veitsburg-Hügel mit Mehlsack, Hügel im Nordwesten,
+  Tunnelhügel „Schussentaler Höhe“, Flussbett der Schussen.
+- **Brücken:** drei Brücken über die Schussen (Schussentalstraße, B30, Tunnelstraße) und die **Überführung**
+  der Querspange über die B30 – man kann oben drüber und unten durch fahren. Dämme haben Leitplanken.
+- **Tunnel** durch die Schussentaler Höhe (Flankenweg), darüber der Höhenweg.
+- **Sprungschanzen** über den Fluss an der Westflanke. Wer zu kurz springt, landet in der Schussen.
+- **Wahrzeichen** als Low-Poly-Modelle: Basilika St. Martin (Doppeltürme, Kuppel), Blaserturm, Mehlsack, Veitsburg.
+- Kartendaten: `site/js/maps.js` (≈0,7 MB inkl. Höhenkarte), das ganze Spiel ≈2 MB.
+
+## Karte neu erzeugen
+1. OSM-Ausschnitte laden und als `ravensburg.osm` / `weingarten.osm` speichern:
+   `https://api.openstreetmap.org/api/0.6/map?bbox=9.6075,47.7772,9.6195,47.7840` und
+   `https://api.openstreetmap.org/api/0.6/map?bbox=9.6375,47.8055,9.6490,47.8112`
+2. `pip install shapely scipy numpy pillow`
+3. `python3 tools/build_world.py <osm-ordner> site/js/maps.js [vorschau.png]`
+   (Fluss, Straßen im Tal, Brücken, Tunnel, Hügel und Wahrzeichen stehen oben in `tools/build_world.py`.)
 
 Kartendaten © OpenStreetMap-Mitwirkende, lizenziert unter ODbL.
