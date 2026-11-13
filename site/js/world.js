@@ -112,6 +112,7 @@ class World {
         wall: WALL[hsh % WALL.length], roof: ROOF[b.c] || ROOF[0], dist: 0,
       };
     });
+    for (const b of this.buildings) b.rf = b.lm || b.flat ? null : roofShape(b);
     this.roads = map.roads.map(r => ({ ...r, bb: polyBBox(r.p) }));
     this.areas = map.areas.map(a => ({ ...a, bb: polyBBox(a.p) }));
     this.water = map.water.map(w => Array.isArray(w) ? { p: w, z: -0.3, bb: polyBBox(w) } : { p: w.p, z: w.z, bb: polyBBox(w.p) });
@@ -240,7 +241,7 @@ class World {
     const ds = this.decksAt(x, y, this._dk || (this._dk = []));
     for (const dz of ds) if (dz <= z + STEP + 0.3 && dz > g) { g = dz; kind = 'deck'; }
     const b = this.buildingAt(x, y);
-    if (b && b.top <= z + 0.6 && b.top > g) { g = b.top; kind = 'roof'; }
+    if (b && b.top <= z + 0.6 && b.top > g) { g = b.rf ? roofZ(b, x, y) : b.top; kind = 'roof'; }
     this.groundKind = kind;
     return g;
   }
@@ -648,15 +649,61 @@ class World {
     const c = document.createElement('canvas'); c.width = Math.ceil(this.w * s); c.height = Math.ceil(this.h * s);
     const g = c.getContext('2d');
     g.setTransform(s, 0, 0, s, 0, 0);
-    g.fillStyle = '#59604f'; g.fillRect(0, 0, this.w, this.h);
+    // kontrastreich: dunkler Grund, helle Straßen, gedämpfte Häuser
+    g.fillStyle = '#2b3030'; g.fillRect(0, 0, this.w, this.h);
     const path = (p, close) => { g.beginPath(); g.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]); if (close) g.closePath(); };
-    for (const a of this.areas) { g.fillStyle = a.t === 'green' ? '#4f7a3b' : a.t === 'sand' ? '#c9b47a' : '#8e897d'; path(a.p, true); g.fill(); }
-    g.lineCap = 'round';
-    for (const r of this.roads) if (r.k <= 2) { g.strokeStyle = r.k === 2 ? '#9d968a' : '#c9c4b8'; g.lineWidth = r.w + 1; path(r.p); g.stroke(); }
-    for (const w of this.water) { g.fillStyle = '#3c7bc4'; path(w.p, true); g.fill(); }
-    for (const b of this.buildings) { g.fillStyle = '#2a2b2e'; path(b.p, true); g.fill(); }
+    for (const a of this.areas) { g.fillStyle = a.t === 'green' ? '#2f4a33' : a.t === 'sand' ? '#5e5640' : '#3b3f42'; path(a.p, true); g.fill(); }
+    for (const w of this.water) { g.fillStyle = '#2f7fd8'; path(w.p, true); g.fill(); }
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    for (const r of this.roads) if (r.k === 1) { g.strokeStyle = '#b9bcbf'; g.lineWidth = r.w + 1.5; path(r.p); g.stroke(); }
+    for (const r of this.roads) if (r.k === 0) { g.strokeStyle = '#ffffff'; g.lineWidth = r.w + 3; path(r.p); g.stroke(); }
+    for (const d of this.decks) { g.strokeStyle = '#ffffff'; g.lineWidth = d.w; g.beginPath(); g.moveTo(d.ax, d.ay); g.lineTo(d.bx, d.by); g.stroke(); }
+    for (const t of this.tunnels) { g.strokeStyle = '#8a8f96'; g.setLineDash([6, 4]); g.lineWidth = t.w * 0.7; g.beginPath(); for (let i = 0; i < t.p.length; i += 3) (i ? g.lineTo : g.moveTo).call(g, t.p[i], t.p[i + 1]); g.stroke(); g.setLineDash([]); }
+    for (const b of this.buildings) { g.fillStyle = b.lm ? '#7b6a55' : '#45474d'; path(b.p, true); g.fill(); }
     return c;
   }
+}
+
+// Dachform wie im 3D-Modell (Satteldach bei 4 Ecken, Zeltdach bei kleinen konvexen Grundrissen)
+function roofShape(b) {
+  const p = b.p, n = p.length / 2;
+  if (n === 4) {
+    const len = i => Math.hypot(p[((i + 1) % 4) * 2] - p[i * 2], p[((i + 1) % 4) * 2 + 1] - p[i * 2 + 1]);
+    const k = len(1) > len(0) ? 1 : 0;
+    const P = i => [p[((i + k) % 4) * 2], p[((i + k) % 4) * 2 + 1]];
+    const half = len((k + 1) % 4) / 2, rise = Math.min(4.5, half * 0.85);
+    const a = P(0), d = P(3), bb = P(1), cc = P(2);
+    return { t: 1, half, rise, r: [(a[0] + d[0]) / 2, (a[1] + d[1]) / 2, (bb[0] + cc[0]) / 2, (bb[1] + cc[1]) / 2] };
+  }
+  if (n > 10) return null;
+  let sign = 0;
+  for (let i = 0; i < n; i++) {
+    const a = i * 2, c1 = ((i + 1) % n) * 2, c2 = ((i + 2) % n) * 2;
+    const cr = (p[c1] - p[a]) * (p[c2 + 1] - p[c1 + 1]) - (p[c1 + 1] - p[a + 1]) * (p[c2] - p[c1]);
+    if (Math.abs(cr) < 1e-6) continue;
+    if (sign && Math.sign(cr) !== sign) return null;
+    sign = Math.sign(cr);
+  }
+  let A = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; A += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; }
+  const rise = Math.min(4, Math.sqrt(Math.abs(A / 2)) * 0.22 + 1.2), ed = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n, ax = p[i * 2], ay = p[i * 2 + 1], L = Math.hypot(p[j * 2] - ax, p[j * 2 + 1] - ay) || 1;
+    const nx = -(p[j * 2 + 1] - ay) / L, ny = (p[j * 2] - ax) / L;
+    ed.push([ax, ay, nx, ny, Math.abs((b.cx - ax) * nx + (b.cy - ay) * ny) || 1]);
+  }
+  return { t: 2, rise, ed };
+}
+function roofZ(b, x, y) {
+  const f = b.rf;
+  if (f.t === 1) {
+    const [ax, ay, bx, by] = f.r, dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2));
+    const d = Math.hypot(x - ax - dx * t, y - ay - dy * t);
+    return b.top + f.rise * Math.max(0, 1 - d / f.half);
+  }
+  let m = 1;
+  for (const [ax, ay, nx, ny, da] of f.ed) m = Math.min(m, Math.abs((x - ax) * nx + (y - ay) * ny) / da);
+  return b.top + f.rise * m;
 }
 
 function drawRamp(g, r) {

@@ -56,7 +56,7 @@ function roundBox(w, h, d, r) {
   g.computeVertexNormals();
   return g;
 }
-const CAR_H = { sport: 1.15, buggy: 1.3, tank: 1.55, jeep: 1.6, truck: 1.85 };
+const CAR_H = { sport: 1.15, buggy: 1.3, tank: 1.55, jeep: 1.75, truck: 2.2 };
 
 class Renderer3D {
   constructor(game, canvas) {
@@ -89,7 +89,7 @@ class Renderer3D {
   // ---------------- Licht ----------------
   buildLights() {
     const s = this.scene;
-    s.add(new THREE.HemisphereLight('#f6f9ff', '#8a7f62', 0.74));
+    s.add(new THREE.HemisphereLight('#f6f9ff', '#a3a092', 0.74));
     const sun = this.sun = new THREE.DirectionalLight('#fff3dc', 0.85);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -227,51 +227,146 @@ class Renderer3D {
       for (let y = 0; y < h; y += 32) for (let x = (y / 32) % 2 ? 16 : 0; x <= w; x += 32) { g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + 32); g.stroke(); }
       this.noise(g, w, h, 500, 'rgba(0,0,0,0.06)', 'rgba(255,255,255,0.08)');
     });
-    // zweite Fassade: Rundbogen-Fenster und Arkaden im Erdgeschoss
-    const arches = this.canvasTex(256, 256, (g, w, h) => {
-      g.fillStyle = '#f4f4f4'; g.fillRect(0, 0, w, h);
-      this.noise(g, w, h, 900, 'rgba(0,0,0,0.05)', 'rgba(255,255,255,0.08)');
-      const arch = (x, y, ww, hh, fill) => { g.beginPath(); g.moveTo(x, y + hh); g.lineTo(x, y + ww / 2); g.arc(x + ww / 2, y + ww / 2, ww / 2, Math.PI, 0); g.lineTo(x + ww, y + hh); g.closePath(); g.fillStyle = fill; g.fill(); };
-      g.fillStyle = 'rgba(0,0,0,0.10)'; g.fillRect(0, 124, w, 4);
-      for (let fx = 0; fx < 2; fx++) {
-        const x = fx * 128 + 36;
-        arch(x - 4, 22, 64, 74, '#d6d6d6');
-        const gr = g.createLinearGradient(x, 26, x + 56, 96); gr.addColorStop(0, '#5d6f80'); gr.addColorStop(1, '#2f3c4a');
-        arch(x, 26, 56, 70, gr);
-        g.fillStyle = '#d6d6d6'; g.fillRect(x + 26, 40, 4, 56);
-        arch(fx * 128 + 18, 150, 92, 106, '#cfcfcf'); arch(fx * 128 + 26, 160, 76, 96, '#3a3530');   // Arkadenbogen
-      }
-    });
     const dash = this.canvasTex(64, 16, (g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = '#f2f2ea'; g.fillRect(0, 0, w * 0.55, h); });
-    this.tex = { facade, arches, roof, asphalt, sidewalk: pavers('#a6a296'), foot: pavers('#ada28c'), dash };
+    this.tex = { facade, roof, asphalt, sidewalk: pavers('#a6a296'), foot: pavers('#ada28c'), dash };
     return this.tex;
   }
 
-  // ---------------- Gebäude: Fassaden mit Fenstern, Ziegeldächer ----------------
+  // Fassaden-Textur + passende Normal-Map: Rahmen, Simse und Läden treten hervor, Glas und Türen liegen zurück
+  facadeTex(w, h, draw) {
+    const mk = hm => {
+      const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d');
+      draw(g, w, h, (col, ht) => hm ? `rgb(${ht},${ht},${ht})` : col, hm); return c;
+    };
+    const col = mk(false), src = mk(true).getContext('2d').getImageData(0, 0, w, h).data;
+    const nc = document.createElement('canvas'); nc.width = w; nc.height = h;
+    const ng = nc.getContext('2d'), out = ng.createImageData(w, h), S = 2.4 / 255;
+    const H = (x, y) => src[((((y + h) % h) * w) + ((x + w) % w)) * 4];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const dx = (H(x + 1, y) - H(x - 1, y)) * S, dy = (H(x, y + 1) - H(x, y - 1)) * S, l = Math.hypot(dx, dy, 1), i = (y * w + x) * 4;
+      out.data[i] = (-dx / l * 0.5 + 0.5) * 255; out.data[i + 1] = (dy / l * 0.5 + 0.5) * 255; out.data[i + 2] = (1 / l * 0.5 + 0.5) * 255; out.data[i + 3] = 255;
+    }
+    ng.putImageData(out, 0, 0);
+    const tex = c => { const t = this.track(new THREE.CanvasTexture(c)); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = this.gl.capabilities.getMaxAnisotropy(); return t; };
+    return { map: tex(col), nmap: tex(nc) };
+  }
+  facades() {
+    if (this.fac) return this.fac;
+    const glassG = (g, x, y, w, h) => { const gr = g.createLinearGradient(x, y, x + w, y + h); gr.addColorStop(0, '#6f8394'); gr.addColorStop(0.45, '#2c3946'); gr.addColorStop(1, '#4b5c70'); return gr; };
+    const base = (g, w, h, k, hm) => { g.fillStyle = k('#f4f4f4', 128); g.fillRect(0, 0, w, h); if (!hm) this.noise(g, w, h, 1200, 'rgba(0,0,0,0.05)', 'rgba(255,255,255,0.08)'); };
+    const arch = (g, x, y, ww, hh) => { g.beginPath(); g.moveTo(x, y + hh); g.lineTo(x, y + ww / 2); g.arc(x + ww / 2, y + ww / 2, ww / 2, Math.PI, 0); g.lineTo(x + ww, y + hh); g.closePath(); };
+    // Obergeschosse: 2 Fenster × 2 Stockwerke = 6 m × 6,4 m
+    const win = (g, k, hm, x, y, rounded) => {
+      g.fillStyle = k('#5c5c5c', 165); g.fillRect(x - 17, y - 2, 13, 68); g.fillRect(x + 56, y - 2, 13, 68);   // Läden
+      if (!hm) { g.fillStyle = 'rgba(0,0,0,0.25)'; for (let s = 0; s < 66; s += 6) { g.fillRect(x - 17, y + s, 13, 2); g.fillRect(x + 56, y + s, 13, 2); } }
+      g.fillStyle = k('#ebebeb', 195);
+      if (rounded) { arch(g, x - 5, y - 6, 62, 74); g.fill(); } else { g.fillRect(x - 5, y - 5, 62, 73); g.fillStyle = k('#dedede', 215); g.fillRect(x - 9, y - 13, 70, 8); }
+      g.fillStyle = hm ? k('', 60) : glassG(g, x, y, 52, 62);
+      if (rounded) { arch(g, x, y, 52, 62); g.fill(); } else g.fillRect(x, y, 52, 62);
+      if (!hm) { g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(x, rounded ? y + 20 : y, 52, 5); g.fillRect(x, y, 4, 62); }   // Schatten in der Laibung
+      g.fillStyle = k('#ebebeb', 150); g.fillRect(x + 24, y + (rounded ? 8 : 0), 4, rounded ? 54 : 62); g.fillRect(x, y + 28, 52, 4);
+      g.fillStyle = k('#cfcfcf', 230); g.fillRect(x - 9, y + 63, 70, 7);   // Fensterbank
+      if (!hm) { const sg = g.createLinearGradient(0, y + 70, 0, y + 84); sg.addColorStop(0, 'rgba(0,0,0,0.3)'); sg.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = sg; g.fillRect(x - 9, y + 70, 70, 14); }
+    };
+    const upper = rounded => this.facadeTex(256, 256, (g, w, h, k, hm) => {
+      base(g, w, h, k, hm);
+      for (let fy = 0; fy < 2; fy++) {
+        g.fillStyle = k('#e4e4e4', 160); g.fillRect(0, fy * 128 + 121, w, 7);   // Stockwerksgesims
+        if (!hm) { g.fillStyle = 'rgba(0,0,0,0.14)'; g.fillRect(0, (fy * 128 + 128) % 256, w, 5); }
+        for (let fx = 0; fx < 2; fx++) win(g, k, hm, fx * 128 + 38, fy * 128 + 30, rounded);
+      }
+    });
+    // Erdgeschoss (6 m × 4,1 m): Haustür + Schaufenster bzw. Arkaden
+    const shop = this.facadeTex(256, 176, (g, w, h, k, hm) => {
+      base(g, w, h, k, hm);
+      g.fillStyle = k('#bdb7ad', 150); g.fillRect(0, h - 26, w, 26);   // Steinsockel
+      // Tür mit Rahmen, zurückgesetzt
+      g.fillStyle = k('#e6e6e6', 200); g.fillRect(30, 44, 70, h - 44);
+      g.fillStyle = k('#6b4a32', 55); g.fillRect(40, 54, 50, h - 62);
+      if (!hm) { g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(40, 54, 50, 6); g.fillRect(40, 54, 5, h - 62); g.fillStyle = '#d9b45a'; g.fillRect(80, 112, 4, 10); }
+      g.fillStyle = k('#5a3d29', 75); g.fillRect(46, 64, 17, 40); g.fillRect(67, 64, 17, 40); g.fillRect(46, 112, 17, 44); g.fillRect(67, 112, 17, 44);
+      g.fillStyle = k('#cfcac0', 220); g.fillRect(26, h - 8, 78, 8);   // Stufe
+      // Schaufenster mit Markise
+      g.fillStyle = k('#e6e6e6', 195); g.fillRect(124, 48, 112, 102);
+      g.fillStyle = hm ? k('', 55) : glassG(g, 132, 56, 96, 86); g.fillRect(132, 56, 96, 86);
+      if (!hm) { g.fillStyle = 'rgba(255,230,170,0.35)'; g.fillRect(140, 108, 80, 34); g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(132, 56, 96, 6); }
+      g.fillStyle = k('#cfcfcf', 230); g.fillRect(120, 146, 120, 6);
+      for (let i = 0; i < 8; i++) { g.fillStyle = k(i % 2 ? '#f2f2f2' : '#b83a32', 235); g.fillRect(118 + i * 15.5, 22, 15.5, 22); }
+      if (!hm) { g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(118, 44, 124, 8); }
+    });
+    const arcade = this.facadeTex(256, 176, (g, w, h, k, hm) => {
+      base(g, w, h, k, hm);
+      for (let fx = 0; fx < 2; fx++) {
+        const x = fx * 128 + 14;
+        g.fillStyle = k('#e2e2e2', 200); arch(g, x - 6, 18, 112, h - 18); g.fill();
+        g.fillStyle = k('#3a3530', 35); arch(g, x + 4, 28, 92, h - 28); g.fill();
+        if (!hm) { const gr = g.createLinearGradient(0, 28, 0, h); gr.addColorStop(0, 'rgba(0,0,0,0.45)'); gr.addColorStop(1, 'rgba(60,50,40,0)'); g.fillStyle = gr; arch(g, x + 4, 28, 92, h - 28); g.fill(); }
+        g.fillStyle = k('#d4d4d4', 225); g.fillRect(x - 8, 70, 8, 6); g.fillRect(x + 96, 70, 8, 6);   // Kämpfer
+      }
+      g.fillStyle = k('#bdb7ad', 150); g.fillRect(0, h - 10, w, 10);
+    });
+    this.fac = { up: upper(false), upArch: upper(true), shop, arcade };
+    return this.fac;
+  }
+
+  // ---------------- Gebäude: Fassaden mit Tiefe, Gesimse, Dachüberstände ----------------
   buildBuildings() {
-    const T = this.makeTextures();
-    const wallA = { pos: [], col: [], uv: [] }, wallB = { pos: [], col: [], uv: [] }, roofB = { pos: [], col: [], uv: [] };
+    const T = this.makeTextures(), F = this.facades();
+    const B_ = () => ({ pos: [], col: [], uv: [] });
+    const wallA = B_(), wallB = B_(), shopB = B_(), arcB = B_(), roofB = B_(), trim = B_();
     const towers = [];   // runde Ecktürme mit Kegeldach: [x, y, r, z0, h, Wandfarbe, Dachfarbe]
     let bi = 0;
     const put = (B, v, c, u) => { B.pos.push(v[0], v[1], v[2]); B.col.push(c.r, c.g, c.b); B.uv.push(u[0], u[1]); };
     const tri = (B, a, b, c, col, ua, ub, uc) => { put(B, a, col, ua); put(B, b, col, ub); put(B, c, col, uc); };
-    const FW = 6, FH = 6.4;  // Fassaden-Kachel in Metern
+    // senkrechtes Wandstück mit Farbverlauf (unten dunkler = Kontaktschatten)
+    const quad = (B, ax, ay, bx, by, z1, z2, u0, u1, v0, v1, c1, c2) => {
+      put(B, [ax, z1, ay], c1, [u0, v0]); put(B, [bx, z1, by], c1, [u1, v0]); put(B, [bx, z2, by], c2, [u1, v1]);
+      put(B, [ax, z1, ay], c1, [u0, v0]); put(B, [bx, z2, by], c2, [u1, v1]); put(B, [ax, z2, ay], c2, [u0, v1]);
+    };
+    const Z = [0, 0];
+    // vorstehendes Band (Gesims / Sockel) entlang einer Kante
+    const band = (ax, ay, bx, by, nx, ny, z1, z2, o, col, top, bottom) => {
+      const L = Math.hypot(bx - ax, by - ay), dx = (bx - ax) / L, dy = (by - ay) / L;
+      const a0x = ax - dx * o, a0y = ay - dy * o, b0x = bx + dx * o, b0y = by + dy * o;
+      const a1x = a0x + nx * o, a1y = a0y + ny * o, b1x = b0x + nx * o, b1y = b0y + ny * o;
+      quad(trim, a1x, a1y, b1x, b1y, z1, z2, 0, 0, 0, 0, col, col);
+      if (top) { const ct = col.clone().multiplyScalar(1.06); tri(trim, [a0x, z2, a0y], [b0x, z2, b0y], [b1x, z2, b1y], ct, Z, Z, Z); tri(trim, [a0x, z2, a0y], [b1x, z2, b1y], [a1x, z2, a1y], ct, Z, Z, Z); }
+      if (bottom) { const cb = col.clone().multiplyScalar(0.55); tri(trim, [a0x, z1, a0y], [b0x, z1, b0y], [b1x, z1, b1y], cb, Z, Z, Z); tri(trim, [a0x, z1, a0y], [b1x, z1, b1y], [a1x, z1, a1y], cb, Z, Z, Z); }
+    };
+    const FW = 6, FH = 6.4, GH = 4.1;  // Fassaden-Kachel / Erdgeschoss in Metern
+    const stone = R3.col('#b3ab9e');
     for (const b of this.game.world.buildings) {
       if (b.lm) continue;   // Wahrzeichen haben eigene Modelle
       const p = b.p, n = p.length / 2, h = b.top, z0 = b.base;
       const wc = R3.col(b.wall), rc = R3.col(b.roof);
       const hsh = (bi++ * 2654435761) >>> 0;
-      const wall = b.c !== 4 && hsh % 10 < 3 ? wallB : wallA;
+      const archy = b.c !== 4 && hsh % 10 < 3;
+      const wall = archy ? wallB : wallA, ground = archy ? arcB : shopB;
+      const split = b.c !== 4 && h - z0 > 7;
+      const gTop = z0 + GH;
+      const cAO = wc.clone().multiplyScalar(0.6), cMid = wc.clone().multiplyScalar(0.93);
+      const cTrim = wc.clone().lerp(R3.col('#ffffff'), 0.45);
+      let A2 = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; A2 += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; }
+      const so = A2 > 0 ? 1 : -1;
+      const roofed = !b.flat && (n === 4 || (n <= 10 && this.convex(p)));
       // Wände
       let run = 0;
       for (let i = 0; i < n; i++) {
         const j = (i + 1) % n;
         const ax = p[i * 2], ay = p[i * 2 + 1], bx = p[j * 2], by = p[j * 2 + 1];
         const L = Math.hypot(bx - ax, by - ay);
-        const u0 = run / FW, u1 = (run + L) / FW, v0 = 0, v1 = (h - z0) / FH;
+        const u0 = run / FW, u1 = (run + L) / FW;
         run += L;
-        tri(wall, [ax, z0, ay], [bx, z0, by], [bx, h, by], wc, [u0, v0], [u1, v0], [u1, v1]);
-        tri(wall, [ax, z0, ay], [bx, h, by], [ax, h, ay], wc, [u0, v0], [u1, v1], [u0, v1]);
+        if (split) {
+          quad(ground, ax, ay, bx, by, z0, gTop, u0, u1, 0, 1, cAO, cMid);
+          quad(wall, ax, ay, bx, by, gTop, h, u0, u1, 0, (h - gTop) / FH, cMid, wc);
+        } else quad(wall, ax, ay, bx, by, z0, h, u0, u1, 0, (h - z0) / FH, cAO, wc);
+        if (L > 1.2 && L) {
+          const nx = so * (by - ay) / L, ny = -so * (bx - ax) / L;
+          band(ax, ay, bx, by, nx, ny, h - 0.45, h, 0.32, cTrim, !roofed, true);                // Traufgesims
+          band(ax, ay, bx, by, nx, ny, z0, z0 + 1.2, 0.1, stone, true, false);                // Sockel
+          if (split) band(ax, ay, bx, by, nx, ny, gTop - 0.12, gTop + 0.12, 0.14, cTrim, true, true);  // Gurtgesims
+        }
       }
       // Dach
       if (!b.flat && n === 4) {
@@ -281,16 +376,27 @@ class Renderer3D {
         const P = i => [p[((i + k) % 4) * 2], p[((i + k) % 4) * 2 + 1]];
         const [p0, p1, p2, p3] = [P(0), P(1), P(2), P(3)];
         const half = len((k + 1) % 4) / 2, rise = Math.min(4.5, half * 0.85);
-        const rh = h + rise, slope = Math.hypot(half, rise) / 3, ridge = len(k) / 3;
-        const r0 = [(p0[0] + p3[0]) / 2, rh, (p0[1] + p3[1]) / 2], r1 = [(p1[0] + p2[0]) / 2, rh, (p1[1] + p2[1]) / 2];
-        const q = v => [v[0], h, v[1]];
+        const rh = h + rise;
+        const m0 = [(p0[0] + p3[0]) / 2, (p0[1] + p3[1]) / 2], m1 = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+        // Dachüberstand: an der Traufe 0,55 m nach außen (entlang der Dachneigung), am Giebel 0,4 m
+        const lr = Math.hypot(m1[0] - m0[0], m1[1] - m0[1]) || 1, ux = (m1[0] - m0[0]) / lr, uy = (m1[1] - m0[1]) / lr, eg = 0.4, ov = 0.55;
+        const ez = h - ov * rise / half;
+        const eave = (pt, m, sgn) => { const vx = pt[0] - m[0], vy = pt[1] - m[1], vl = Math.hypot(vx, vy) || 1; return [pt[0] + vx / vl * ov + ux * eg * sgn, ez, pt[1] + vy / vl * ov + uy * eg * sgn]; };
+        const e0 = eave(p0, m0, -1), e1 = eave(p1, m1, 1), e2 = eave(p2, m1, 1), e3 = eave(p3, m0, -1);
+        const r0 = [m0[0] - ux * eg, rh, m0[1] - uy * eg], r1 = [m1[0] + ux * eg, rh, m1[1] + uy * eg];
+        const slope = Math.hypot(half + ov, rise + ov * rise / half) / 3, ridge = (lr + 2 * eg) / 3;
         const dark = rc.clone().multiplyScalar(0.84);
-        tri(roofB, q(p0), q(p1), r1, rc, [0, 0], [ridge, 0], [ridge, slope]); tri(roofB, q(p0), r1, r0, rc, [0, 0], [ridge, slope], [0, slope]);
-        tri(roofB, q(p2), q(p3), r0, dark, [0, 0], [ridge, 0], [ridge, slope]); tri(roofB, q(p2), r0, r1, dark, [0, 0], [ridge, slope], [0, slope]);
+        tri(roofB, e0, e1, r1, rc, [0, 0], [ridge, 0], [ridge, slope]); tri(roofB, e0, r1, r0, rc, [0, 0], [ridge, slope], [0, slope]);
+        tri(roofB, e2, e3, r0, dark, [0, 0], [ridge, 0], [ridge, slope]); tri(roofB, e2, r0, r1, dark, [0, 0], [ridge, slope], [0, slope]);
+        // First-Kappe
+        const rk = rc.clone().multiplyScalar(0.7);
+        tri(trim, [r0[0], rh + 0.14, r0[2]], [r1[0], rh + 0.14, r1[2]], [r1[0], rh - 0.05, r1[2]], rk, Z, Z, Z);
+        tri(trim, [r0[0], rh + 0.14, r0[2]], [r1[0], rh - 0.05, r1[2]], [r0[0], rh - 0.05, r0[2]], rk, Z, Z, Z);
         // Giebel (Wandfarbe, ohne Fenster)
         const gv = (h - z0) / FH, gt = (rh - z0) / FH;
-        tri(wall, q(p3), q(p0), r0, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
-        tri(wall, q(p1), q(p2), r1, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
+        const q = v => [v[0], h, v[1]], rr0 = [m0[0], rh, m0[1]], rr1 = [m1[0], rh, m1[1]];
+        tri(wall, q(p3), q(p0), rr0, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
+        tri(wall, q(p1), q(p2), rr1, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
         // manche Eckhäuser bekommen einen runden Turm mit spitzem Kegeldach
         const sh = Math.min(len(0), len(1));
         if (hsh % 9 === 0 && sh > 9 && h - z0 > 7) {
@@ -303,15 +409,15 @@ class Renderer3D {
         let A = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; A += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; }
         const rh = h + Math.min(4, Math.sqrt(Math.abs(A / 2)) * 0.22 + 1.2);
         const apex = [b.cx, rh, b.cy];
+        const ex = (x, y) => { const vx = x - b.cx, vy = y - b.cy, l = Math.hypot(vx, vy) || 1; return [x + vx / l * 0.55, h - 0.3, y + vy / l * 0.55]; };
         for (let i = 0; i < n; i++) {
           const j = (i + 1) % n;
           const ax = p[i * 2], ay = p[i * 2 + 1], bx = p[j * 2], by = p[j * 2 + 1];
           const L = Math.hypot(bx - ax, by - ay) || 1;
-          // Abstand der Spitze zur Kante -> v
           const dist = Math.abs((bx - ax) * (ay - b.cy) - (ax - b.cx) * (by - ay)) / L;
           const tproj = ((b.cx - ax) * (bx - ax) + (b.cy - ay) * (by - ay)) / L;
           const sl = Math.hypot(dist, rh - h) / 3;
-          tri(roofB, [ax, h, ay], [bx, h, by], apex, i % 2 ? rc : rc.clone().multiplyScalar(0.86), [0, 0], [L / 3, 0], [tproj / 3, sl]);
+          tri(roofB, ex(ax, ay), ex(bx, by), apex, i % 2 ? rc : rc.clone().multiplyScalar(0.86), [0, 0], [L / 3, 0], [tproj / 3, sl]);
         }
       } else {
         const pts = [];
@@ -325,19 +431,24 @@ class Renderer3D {
         }
       }
     }
-    const mk = (B, map) => {
+    const mk = (B, map, nmap) => {
+      if (!B.pos.length) return;
       const g = this.track(new THREE.BufferGeometry());
       g.setAttribute('position', new THREE.Float32BufferAttribute(B.pos, 3));
       g.setAttribute('color', new THREE.Float32BufferAttribute(B.col, 3));
       g.setAttribute('uv', new THREE.Float32BufferAttribute(B.uv, 2));
       g.computeVertexNormals();
-      const m = new THREE.Mesh(g, this.mat({ vertexColors: true, map, side: THREE.DoubleSide }));
+      const m = new THREE.Mesh(g, nmap
+        ? this.mat({ vertexColors: true, map, normalMap: nmap, normalScale: new THREE.Vector2(1.2, 1.2), specular: '#0c0c0c', shininess: 6, side: THREE.DoubleSide }, 'Phong')
+        : this.mat({ vertexColors: true, map, side: THREE.DoubleSide }));
       m.castShadow = true; m.receiveShadow = true;
       this.scene.add(m);
     };
-    mk(wallA, T.facade); mk(wallB, T.arches); mk(roofB, T.roof);
+    mk(wallA, F.up.map, F.up.nmap); mk(wallB, F.upArch.map, F.upArch.nmap);
+    mk(shopB, F.shop.map, F.shop.nmap); mk(arcB, F.arcade.map, F.arcade.nmap);
+    mk(roofB, T.roof); mk(trim, null);
     if (towers.length) {
-      const cyl = new THREE.InstancedMesh(this.track(new THREE.CylinderGeometry(1, 1, 1, 16)), this.mat({ map: T.facade }), towers.length);
+      const cyl = new THREE.InstancedMesh(this.track(new THREE.CylinderGeometry(1, 1, 1, 16)), this.mat({ map: F.up.map, normalMap: F.up.nmap, specular: '#0c0c0c', shininess: 6 }, 'Phong'), towers.length);
       const cone = new THREE.InstancedMesh(this.track(new THREE.ConeGeometry(1.18, 1, 16)), this.mat({ map: T.roof }), towers.length);
       const d = new THREE.Object3D();
       towers.forEach(([x, y, r, z0, hh, wc, rc], i) => {
@@ -751,56 +862,117 @@ class Renderer3D {
     const def = c.def, tm = TEAM[c.team], L = def.len, Wd = def.wid, H = CAR_H[def.shape] || 1.4;
     const root = new THREE.Group();
     const body = new THREE.Group(); root.add(body);
-    const paint = this.mat({ color: tm.color, specular: '#ffffff', shininess: 70 }, 'Phong');
-    const dark = this.mat({ color: tm.dark, specular: '#333333', shininess: 30 }, 'Phong');
+    const paint = this.mat({ color: tm.color, specular: '#1c1c1c', shininess: 45 }, 'Phong');
+    const dark = this.mat({ color: tm.dark, specular: '#121212', shininess: 30 }, 'Phong');
     const black = this.mat({ color: '#171717' });
-    const glass = this.mat({ color: '#1c2a3a', specular: '#9fc7ff', shininess: 100 }, 'Phong');
-    const metal = this.mat({ color: '#3a3f45', specular: '#888888', shininess: 50 }, 'Phong');
+    const glass = this.mat({ color: '#1c2a3a', specular: '#3a5068', shininess: 90 }, 'Phong');
+    const metal = this.mat({ color: '#3a3f45', specular: '#141414', shininess: 35 }, 'Phong');
     const box = (w, h, d, m, x, y, z) => { const o = new THREE.Mesh(this.track(roundBox(w, h, d, Math.min(0.14, w * 0.3, h * 0.3, d * 0.3))), m); o.position.set(x, y, z); o.castShadow = true; body.add(o); return o; };
+    // Seitenprofil (x = Länge, y = Höhe) über die Breite extrudiert, mit weichen Kanten
+    const prof = (pts, w, m, z = 0, bev = 0.07) => {
+      const sh = new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y)));
+      const d = Math.max(0.02, w - 2 * bev);
+      const g = this.track(new THREE.ExtrudeGeometry(sh, { depth: d, bevelEnabled: true, bevelThickness: bev, bevelSize: bev, bevelOffset: -bev, bevelSegments: 2, curveSegments: 4 }));
+      g.translate(0, 0, -d / 2); g.computeVertexNormals();
+      const o = new THREE.Mesh(g, m); o.position.z = z; o.castShadow = true; body.add(o); return o;
+    };
+    const tube = (x1, y1, z1, x2, y2, z2, r, m) => {
+      const a = new THREE.Vector3(x1, y1, z1), b = new THREE.Vector3(x2, y2, z2), L = a.distanceTo(b);
+      const o = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r, r, L, 8)), m);
+      o.position.copy(a).add(b).multiplyScalar(0.5); o.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+      o.castShadow = true; body.add(o); return o;
+    };
+    const tire = this.mat({ color: '#1b1b1d', specular: '#222222', shininess: 8 }, 'Phong');
+    const rim = this.mat({ color: '#b9bcc1', specular: '#2a2a2a', shininess: 70 }, 'Phong');
+    const wheels = [];
+    // große, frei stehende Geländeräder mit Felge, Profilstollen und Nabe; drehen sich und lenken vorne
     const wheel = (r, w, x, z) => {
-      const o = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r, r, w, 14)), black);
-      o.rotation.x = Math.PI / 2; o.position.set(x, r, z); o.castShadow = true; body.add(o); return o;
+      const wg = new THREE.Group(); wg.position.set(x, r, z); wg.rotation.order = 'YZX'; body.add(wg);
+      const t = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r, r, w, 20)), tire); t.rotation.x = Math.PI / 2; t.castShadow = true; wg.add(t);
+      const lugs = new THREE.Mesh(this.track(new THREE.TorusGeometry(r * 0.97, r * 0.07, 4, 16)), tire); lugs.scale.z = w / (r * 0.14) * 0.9; wg.add(lugs);
+      const rr = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r * 0.58, r * 0.58, w + 0.04, 10)), rim); rr.rotation.x = Math.PI / 2; wg.add(rr);
+      const hub = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r * 0.2, r * 0.26, w + 0.12, 6)), metal); hub.rotation.x = Math.PI / 2; wg.add(hub);
+      wheels.push({ g: wg, r, front: x > 0 });
+      return wg;
+    };
+    const lightF = this.mat({ color: '#fff6d8', emissive: '#bba86a' }), lightR = this.mat({ color: '#ff3b30', emissive: '#7a1410' });
+    const lamps = (xf, xr, y, hw) => {
+      for (const s of [1, -1]) { box(0.12, 0.16, 0.38, lightF, xf, y, s * hw); box(0.1, 0.14, 0.3, lightR, xr, y, s * hw); }
     };
     let faceY = H + 0.02, faceX = c.shape.face;
+    const hl = L / 2;
     switch (def.shape) {
-      case 'sport':
-        for (const [x, z] of [[1.35, 1], [1.35, -1], [-1.35, 1], [-1.35, -1]]) wheel(0.38, 0.4, x, z);
-        box(L, 0.55, Wd, paint, 0, 0.6, 0);
-        box(L * 0.45, 0.42, Wd * 0.82, glass, -0.1, 1.05, 0);
-        box(0.3, 0.12, Wd, dark, -L / 2 + 0.15, 1.05, 0);
-        box(L * 0.9, 0.02, 0.18, this.mat({ color: '#ffffff' }), 0, 0.885, 0.2); box(L * 0.9, 0.02, 0.18, this.mat({ color: '#ffffff' }), 0, 0.885, -0.2);
-        faceY = 1.27; faceX = -0.1;
+      case 'sport': {   // flache Keilform mit schräger Frontscheibe
+        for (const [x, z] of [[1.4, 1.02], [1.4, -1.02], [-1.35, 1.02], [-1.35, -1.02]]) wheel(0.44, 0.42, x, z);
+        prof([[-hl, 0.38], [hl, 0.38], [hl, 0.62], [hl * 0.55, 0.8], [0.2, 0.86], [-hl * 0.75, 0.86], [-hl, 0.78]], Wd - 0.5, paint);
+        for (const s of [1, -1]) prof([[0.85, 0.5], [1.95, 0.5], [1.75, 0.82], [1.05, 0.86]], 0.36, dark, s * (Wd / 2 - 0.2));     // Kotflügel vorne
+        for (const s of [1, -1]) prof([[-1.95, 0.5], [-0.8, 0.5], [-1.0, 0.88], [-1.85, 0.86]], 0.38, dark, s * (Wd / 2 - 0.2));  // hinten
+        prof([[0.65, 0.84], [-0.85, 0.84], [-1.05, 1.0], [-0.55, H], [0.05, H]], Wd * 0.72, glass);
+        prof([[0.02, H - 0.02], [-0.55, H - 0.02], [-0.56, H + 0.04], [0.0, H + 0.04]], Wd * 0.74, paint);
+        box(0.3, 0.12, Wd - 0.4, dark, -hl + 0.15, 1.02, 0);   // Heckflügel
+        box(0.25, 0.28, Wd - 0.3, black, hl + 0.05, 0.48, 0);
+        lamps(hl - 0.02, -hl + 0.02, 0.62, Wd / 2 - 0.55);
+        faceY = H + 0.06; faceX = -0.25;
         break;
-      case 'buggy':
-        for (const [x, z] of [[1.25, 1.05], [1.25, -1.05]]) wheel(0.48, 0.55, x, z);
-        for (const [x, z] of [[-1.2, 1.1], [-1.2, -1.1]]) wheel(0.58, 0.65, x, z);
-        box(L * 0.9, 0.35, 1.5, dark, 0, 0.55, 0);
-        box(L * 0.55, 0.3, 1.7, paint, 0.6, 0.8, 0);
-        for (const z of [-0.75, 0.75]) { box(0.1, 0.9, 0.1, metal, -0.6, 1.25, z); box(0.1, 0.9, 0.1, metal, 0.6, 1.25, z); box(1.3, 0.1, 0.1, metal, 0, 1.7, z); }
-        faceY = 1.12; faceX = 0.1;
+      }
+      case 'buggy': {   // offener Rahmen mit Überrollbügeln, riesige Hinterräder
+        for (const [x, z] of [[1.3, 1.12], [1.3, -1.12]]) wheel(0.5, 0.5, x, z);
+        for (const [x, z] of [[-1.15, 1.15], [-1.15, -1.15]]) wheel(0.64, 0.62, x, z);
+        prof([[-hl + 0.3, 0.42], [hl, 0.42], [hl, 0.62], [hl * 0.3, 0.9], [-hl + 0.3, 0.9]], 1.5, dark);
+        prof([[0.2, 0.86], [hl, 0.62], [hl - 0.1, 0.8], [0.4, 1.05]], 1.65, paint);
+        for (const s of [1, -1]) prof([[0.75, 0.62], [1.85, 0.62], [1.7, 0.95], [0.95, 1.0]], 0.3, paint, s * 0.95);
+        const cy = 1.75;
+        for (const z of [-0.72, 0.72]) {
+          tube(-0.85, 0.9, z, -0.6, cy, z * 0.9, 0.06, metal); tube(0.55, 0.9, z, 0.2, cy, z * 0.9, 0.06, metal);
+          tube(-0.6, cy, z * 0.9, 0.2, cy, z * 0.9, 0.06, metal);
+        }
+        tube(-0.6, cy, 0.65, -0.6, cy, -0.65, 0.06, metal); tube(0.2, cy, 0.65, 0.2, cy, -0.65, 0.06, metal);
+        box(0.5, 0.5, 0.9, black, -1.35, 0.95, 0);   // Motor hinten
+        lamps(hl - 0.05, -hl + 0.35, 0.72, 0.55);
+        faceY = 1.1; faceX = -0.1;
         break;
-      case 'tank':
-        box(L, 0.75, 0.75, black, 0, 0.42, Wd / 2 - 0.38); box(L, 0.75, 0.75, black, 0, 0.42, -Wd / 2 + 0.38);
-        box(L - 0.3, 0.6, Wd - 1.2, dark, 0, 0.75, 0);
-        box(L - 0.5, 0.3, Wd - 0.5, paint, 0, 1.05, 0);
-        faceY = 1.22; faceX = 1.6;
+      }
+      case 'tank': {    // gepanzerter Kettenwagen mit schrägen Panzerplatten
+        for (const s of [1, -1]) {
+          box(L, 0.8, 0.72, black, 0, 0.45, s * (Wd / 2 - 0.36));
+          for (let i = 0; i < 5; i++) { const w = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.3, 0.3, 0.76, 12)), metal); w.rotation.x = Math.PI / 2; w.position.set(-hl + 0.6 + i * (L - 1.2) / 4, 0.38, s * (Wd / 2 - 0.36)); body.add(w); }
+          prof([[-hl - 0.05, 0.82], [hl + 0.05, 0.82], [hl - 0.2, 1.0], [-hl + 0.1, 1.0]], 0.82, dark, s * (Wd / 2 - 0.36));   // Kettenschürze
+        }
+        prof([[-hl + 0.1, 0.55], [hl - 0.3, 0.55], [hl, 0.75], [hl - 0.8, H - 0.15], [-hl + 0.3, H - 0.15], [-hl + 0.1, 0.95]], Wd - 1.35, paint);
+        prof([[hl - 0.85, H - 0.18], [-hl + 0.35, H - 0.18], [-hl + 0.6, H], [hl - 1.2, H]], Wd - 1.6, dark);
+        lamps(hl - 0.2, -hl + 0.1, 0.85, Wd / 2 - 1.0);
+        faceY = H + 0.02; faceX = 1.55;
         break;
-      case 'jeep':
-        for (const [x, z] of [[1.45, 1.05], [1.45, -1.05], [-1.45, 1.05], [-1.45, -1.05]]) wheel(0.45, 0.45, x, z);
-        box(L, 0.55, Wd, dark, 0, 0.65, 0);
-        box(L * 0.42, 0.6, Wd - 0.15, paint, L * 0.25, 1.2, 0);
-        box(0.1, 0.45, Wd - 0.4, glass, L * 0.25 + L * 0.21, 1.2, 0);
-        box(L * 0.45, 0.3, 0.15, paint, -L * 0.25, 1.05, Wd / 2 - 0.08); box(L * 0.45, 0.3, 0.15, paint, -L * 0.25, 1.05, -Wd / 2 + 0.08);
-        faceY = 1.52; faceX = L * 0.22;
+      }
+      case 'jeep': {    // Geländewagen: Motorhaube, Kabine, Reserverad
+        for (const [x, z] of [[1.5, 1.1], [1.5, -1.1], [-1.45, 1.1], [-1.45, -1.1]]) wheel(0.52, 0.5, x, z);
+        prof([[-hl, 0.48], [hl, 0.48], [hl, 0.98], [hl * 0.25, 1.05], [-hl, 1.05]], Wd - 0.5, dark);
+        prof([[hl * 0.2, 1.0], [hl, 0.95], [hl - 0.05, 1.12], [hl * 0.2, 1.18]], Wd - 0.55, paint);   // Haube
+        prof([[hl * 0.22, 1.08], [-0.75, 1.08], [-0.8, H - 0.08], [-0.05, H - 0.08]], Wd - 0.6, glass);
+        prof([[-0.02, H - 0.1], [-0.82, H - 0.1], [-0.82, H], [-0.02, H]], Wd - 0.5, paint);
+        for (const s of [1, -1]) { prof([[0.95, 0.7], [2.1, 0.7], [2.0, 1.02], [1.05, 1.08]], 0.32, paint, s * (Wd / 2 - 0.12)); prof([[-2.0, 0.7], [-0.9, 0.7], [-1.0, 1.08], [-1.95, 1.06]], 0.32, paint, s * (Wd / 2 - 0.12)); }
+        const sp = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.42, 0.42, 0.28, 16)), tire); sp.rotation.z = Math.PI / 2; sp.position.set(-hl - 0.12, 1.0, 0); body.add(sp);
+        box(0.22, 0.3, Wd - 0.2, black, hl + 0.08, 0.62, 0);
+        lamps(hl - 0.02, -hl + 0.02, 0.88, Wd / 2 - 0.45);
+        faceY = H + 0.02; faceX = -0.45;
         break;
-      case 'truck':
-        for (const [x, z] of [[1.5, 1.15], [1.5, -1.15], [-1.5, 1.15], [-1.5, -1.15]]) wheel(0.65, 0.6, x, z);
-        box(L - 0.2, 0.7, Wd - 0.3, dark, 0, 1.05, 0);
-        box(L * 0.6, 0.6, Wd - 0.5, paint, 0.3, 1.7, 0);
-        box(0.08, 0.45, Wd - 0.7, glass, 0.3 + L * 0.3, 1.7, 0);
-        for (const z of [-0.5, 0, 0.5]) box(0.15, 0.15, 0.15, this.mat({ color: '#ffe9a0', emissive: '#aa9a40' }), 0.3 + L * 0.3 - 0.4, 2.05, z);
-        faceY = 2.02; faceX = 0.2;
+      }
+      case 'truck': {   // Monster-Pickup: hohe Kabine, Ladefläche, riesige Räder
+        for (const [x, z] of [[1.55, 1.2], [1.55, -1.2], [-1.55, 1.2], [-1.55, -1.2]]) wheel(0.72, 0.62, x, z);
+        prof([[-hl, 0.95], [hl, 0.95], [hl, 1.42], [hl * 0.45, 1.5], [-hl, 1.5]], Wd - 0.5, dark);
+        prof([[hl * 0.45, 1.42], [hl, 1.38], [hl - 0.05, 1.6], [hl * 0.4, 1.66]], Wd - 0.55, paint);
+        prof([[hl * 0.42, 1.55], [-0.35, 1.55], [-0.4, H - 0.08], [0.55, H - 0.08]], Wd - 0.6, glass);
+        prof([[0.53, H - 0.1], [-0.42, H - 0.1], [-0.42, H], [0.5, H]], Wd - 0.5, paint);
+        for (const s of [1, -1]) box(hl - 0.5, 0.35, 0.12, paint, -hl / 2 - 0.2, 1.62, s * (Wd / 2 - 0.3));   // Ladeflächen-Bordwand
+        box(0.12, 0.35, Wd - 0.6, paint, -hl + 0.08, 1.62, 0);
+        for (const s of [1, -1]) prof([[0.8, 1.05], [2.3, 1.05], [2.15, 1.45], [0.95, 1.5]], 0.4, paint, s * (Wd / 2 - 0.08));
+        for (const s of [1, -1]) prof([[-2.3, 1.05], [-0.8, 1.05], [-0.95, 1.5], [-2.15, 1.45]], 0.4, paint, s * (Wd / 2 - 0.08));
+        for (const z of [-0.5, 0, 0.5]) box(0.15, 0.15, 0.15, this.mat({ color: '#ffe9a0', emissive: '#aa9a40' }), 0.4, H + 0.08, z);
+        box(0.25, 0.32, Wd - 0.1, black, hl + 0.1, 1.05, 0);
+        lamps(hl - 0.02, -hl + 0.02, 1.3, Wd / 2 - 0.5);
+        faceY = H + 0.02; faceX = 0.05;
         break;
+      }
     }
     // Fahrer-Gesicht durchs Schiebedach (immer nach Norden ausgerichtet)
     const fr = c.shape.faceR * 0.95;
@@ -812,6 +984,7 @@ class Renderer3D {
     ring.rotation.x = -Math.PI / 2; ring.position.set(faceX, faceY + 0.005, 0); root.add(ring);
     // Turm
     const turret = new THREE.Group(); turret.position.set(c.shape.turret, H + 0.05, 0); root.add(turret);
+    const ringM = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.62, 0.72, 0.22, 16)), metal); ringM.position.y = 0.06; ringM.castShadow = true; turret.add(ringM);
     const tb = (w, h, d, m, x, y, z) => { const o = new THREE.Mesh(this.track(new THREE.BoxGeometry(w, h, d)), m); o.position.set(x, y, z); o.castShadow = true; turret.add(o); return o; };
     const barrel = (r, l, m, x, y, z) => { const o = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r, r, l, 8)), m); o.rotation.z = Math.PI / 2; o.position.set(x + l / 2, y, z); o.castShadow = true; turret.add(o); return o; };
     switch (def.weapon) {
@@ -823,8 +996,9 @@ class Renderer3D {
     }
     // Geister-Umriss für den Spieler (sichtbar durch Häuser)
     if (c.isPlayer) {
-      const ghost = new THREE.Mesh(this.track(new THREE.BoxGeometry(L, H, Wd)), this.track(new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.22, depthTest: false, depthWrite: false })));
-      ghost.position.y = H / 2; ghost.renderOrder = 999; root.add(ghost);
+      const ghost = new THREE.Mesh(this.track(new THREE.BoxGeometry(L, H, Wd)), this.track(new THREE.MeshBasicMaterial({ color: '#9fc4ff', blending: THREE.AdditiveBlending, opacity: 0.5, depthFunc: THREE.GreaterDepth, depthWrite: false })));
+      // nur dort sichtbar, wo Häuser davor stehen: vor dem Auto (renderOrder 10) zeichnen, additiv
+      ghost.position.y = H / 2; ghost.renderOrder = 5; ghost.userData.ghost = true; root.add(ghost);
     }
     // Flagge, wenn getragen
     const fl = new THREE.Group();
@@ -832,14 +1006,14 @@ class Renderer3D {
     const cloth = new THREE.Mesh(this.track(new THREE.PlaneGeometry(2, 1.3)), this.mat({ color: '#fff', side: THREE.DoubleSide }));
     cloth.geometry.translate(1, 0, 0); cloth.position.y = 2.9; fl.add(cloth);
     fl.position.set(-L / 2 + 0.3, H, 0); fl.visible = false; root.add(fl);
-    root.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
+    root.traverse(o => { if (o.isMesh) { o.receiveShadow = true; if (!o.userData.ghost) o.renderOrder = 10; } });
     // Drehpunkt in der Wagenmitte: Saltos und Hangneigung drehen um den Schwerpunkt statt um die Räder
     const spin = new THREE.Group(), inner = new THREE.Group();
     spin.position.y = H * 0.5; inner.position.y = -H * 0.5;
     for (const ch of [...root.children]) inner.add(ch);
     spin.add(inner); root.add(spin);
     this.scene.add(root);
-    return { root, spin, turret, face, ring, flag: fl, flagCloth: cloth, paint, flashOn: false, lastFlag: -2 };
+    return { root, spin, wheels, turret, face, ring, flag: fl, flagCloth: cloth, paint, flashOn: false, lastFlag: -2 };
   }
 
   // ---------------- Kamera / Projektion ----------------
@@ -956,6 +1130,9 @@ class Renderer3D {
       m.roll = (m.roll || 0) + (roll - (m.roll || 0)) * 0.25;
       m.spin.rotation.order = 'XZY'; m.spin.rotation.z = m.pitch; m.spin.rotation.x = m.roll;
       m.turret.rotation.y = -(c.turret - c.a);
+      // Räder drehen und vorne einlenken
+      const vfw = c.vx * ca + c.vy * sa;
+      for (const w of m.wheels) { w.g.rotation.z -= vfw * dt / w.r; if (w.front) w.g.rotation.y = (c.steerS || 0) * 0.45; }
       // Gesicht immer „aufrecht“ zur Kamera
       m.face.rotation.y = c.a - Math.PI / 2 - (G.camMode === 'chase' ? G.camYaw : -Math.PI / 2);
       const flash = c.flashT > 0;

@@ -36,6 +36,9 @@ Hinweise:
   Mehlsack-Panzer (schwerer Truck, Kanone mit Nachladezeit) · Raketen-Rudi (leicht lenkende Raketen – ausweichbar) · Allgäu-Bock (Springer, Schrotflinte).
 - **Drift:** `Q` + Lenken – Heck bricht aus, engere Kurven bei vollem Tempo.
 - **Sprung + Nitro:** `Leertaste` springt auch im Stand; `Shift` in der Luft gibt Schub und Auftrieb → gleiten/fliegen, solange das Nitro reicht.
+- **Dächer-Hüpfen:** höhere Sprünge; Sprung + Nitro steigt bis gut 20 m und trägt über Häuser. Auf Satteldächern landet man auf den Ziegeln.
+- **Nitro laden:** schneller als vorher, Bonus beim Driften (`Q`), in der Luft und für jeden sauberen Salto.
+- **Minikarte (unten rechts):** großer Ausschnitt um dich, helle Straßen, dunkle Häuser, Basen R/B, Flaggen (getragene Flagge mit pulsierendem Ring), Pfeile für dich, Team und Gegner in der Nähe.
 - **Saltos:** in der Luft `W`/`S` + `Shift` → Vorwärts-/Rückwärtssalto (360°). Kurz vor dem Boden richtet sich das Auto leicht auf; saubere Landung = +25 XP pro Salto, schiefe Landung bremst und kostet etwas Panzerung.
 - **Schussen-Schanzen:** breite gelbe Schanzen direkt vor dem Fluss (neben den Brücken) – mit Anlauf quer über das Wasser springen.
 - **XP im Match:** Abschuss 100, Assist 40, Flagge klauen 50, Rettung 60, Punkt 300. Alle 200 XP ein Upgrade für die laufende Runde:

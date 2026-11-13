@@ -91,8 +91,8 @@ function carStats(car, lv, ups) {
     dmg: (b.dmg + p.dmg * w) * ud,
     rate: b.rate + p.rate * f,
     boost: (b.boost + p.boost * t) * 1.5,
-    boostRegen: 0.32 + 0.05 * t,
-    jump: b.jump + p.jump * s,
+    boostRegen: 0.5 + 0.06 * t,
+    jump: (b.jump + p.jump * s) * 1.5,   // hoch genug, um mit Nitro über Dächer zu springen
     jumpCd: Math.max(0.9, 2.2 - 0.25 * s),
   };
 }
@@ -104,7 +104,7 @@ const STAT_BARS = [
   { k: 'dps', name: 'Feuerkraft', max: 90 },
   { k: 'rate', name: 'Feuerrate', max: 26 },
   { k: 'boost', name: 'Nitro', max: 6.5 },
-  { k: 'jump', name: 'Sprung', max: 16 },
+  { k: 'jump', name: 'Sprung', max: 24 },
 ];
 function carDps(car, st) {
   const w = WEAPONS[car.weapon];

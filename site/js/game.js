@@ -211,7 +211,7 @@ class Game {
     this.time = opts.timeLimit; this.state = 'countdown'; this.countT = 3.5; this.lastCount = 4;
     this.earned = 0; this.shake = 0; this.zoomMul = 1; this.showBoard = false; this.paused = false;
     this.cam = { x: 0, y: 0 };
-    this.mini = this.world.renderMini(190);
+    this.mini = this.world.renderMini(1100);
     this.props = this.map.crates.map(c => ({ ...c, ...PROP[c.t], z: this.world.terrain(c.x, c.y), alive: true, hpNow: PROP[c.t].hp, respawnT: 0 }));
     this.pickups = this.map.pickups.map(p => ({ ...p, z: this.world.terrain(p.x, p.y), active: true, t2: 0 }));
     this.flags = this.world.bases.map((b, i) => ({ team: i, state: 'base', x: b.x, y: b.y, z: this.world.terrain(b.x, b.y), carrier: null, dropT: 0 }));
@@ -578,7 +578,11 @@ class Game {
     // Turbo
     c.boosting = playing && inp.boost && c.boost > 0.02 && (thr >= 0 || !onGround);
     if (c.boosting) { c.boost = Math.max(0, c.boost - dt); }
-    else c.boost = Math.min(st.boost, c.boost + st.boostRegen * dt);
+    else {
+      // Nitro lädt schneller beim Driften und in der Luft (Sprünge, Saltos)
+      const bonus = (c.drifting && Math.hypot(c.vx, c.vy) > 8 ? 0.7 : 0) + (!onGround ? 0.45 : 0);
+      c.boost = Math.min(st.boost, c.boost + (st.boostRegen + bonus) * dt);
+    }
     const wz = W.waterAt(c.x, c.y);
     const surfWater = wz !== null && c.groundKind !== 'deck' && c.groundKind !== 'roof' && c.z < wz + 0.5;
     if (onGround) {
@@ -634,9 +638,9 @@ class Game {
         // Nitro in der Luft: Schub nach vorne und Auftrieb -> gleiten / fliegen
         vF = Math.min(vF + st.accel * 1.3 * dt, st.speed * 1.5);
         vL *= Math.exp(-2.5 * dt);
-        c.vz += GRAV * 0.84 * dt;
+        c.vz += GRAV * (c.z - c.groundZ > 18 ? 0.9 : c.vz < 9 ? 1.3 : 0.92) * dt;   // kräftiger Auftrieb bis ~20 m: über Dächer hüpfen
         if (c.vz < -3) c.vz += 14 * dt;
-        if (c.z - c.groundZ > 32 && c.vz > 0) c.vz *= 0.9;
+        if (c.z - c.groundZ > 22 && c.vz > 0) c.vz *= 0.9;
         if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6, y: c.y - fy * c.def.len * 0.6, zAbs: c.z + 0.6, vz: -2, vx: -fx * 12 + rand(-2, 2), vy: -fy * 12 + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
       }
     }
@@ -758,7 +762,8 @@ class Game {
       if (c.isPlayer) { this.say('Bruchlandung!', '#ff8c7f', 1, false); this.shake = Math.min(1, this.shake + 0.5); }
     } else if (flips > 0) {
       const n = Math.min(flips, 3), txt = (c.flipAcc > 0 ? 'Rückwärtssalto' : 'Salto') + (n > 1 ? ' ×' + n : '') + '!';
-      if (c.isPlayer) { this.say(txt, '#ffe66d', 1.2, false); Sound.play('pickup'); }
+      c.boost = Math.min(c.st.boost, c.boost + 0.8 * n);   // Salto füllt Nitro auf
+      if (c.isPlayer) { this.say(txt + ' +Nitro', '#ffe66d', 1.2, false); Sound.play('pickup'); }
       if (this.isClient && c === this.player) { if (typeof Net !== 'undefined') Net.send({ t: 'flip', n }); }
       else this.addXp(c, 25 * n);
     }
@@ -1454,7 +1459,7 @@ class Game {
       if ((B.hurtT > 0 && Math.random() < 0.04 * (diff + 1)) || (B.stuckT > 0.5)) {
         // nicht in Flussnähe springen (sonst landet der Bot im Wasser)
         let wet = false;
-        for (let k = 0; k < 16 && !wet; k++) { const rr2 = k < 8 ? 15 : 35; wet = W.waterAt(c.x + Math.cos(k * 0.785) * rr2, c.y + Math.sin(k * 0.785) * rr2) !== null; }
+        for (let k = 0; k < 32 && !wet; k++) { const rr2 = [15, 30, 45, 60][k >> 3]; wet = W.waterAt(c.x + Math.cos(k * 0.785) * rr2, c.y + Math.sin(k * 0.785) * rr2) !== null; }
         if (!wet) { inp.jump = true; B.jumpT = 1.5; } else B.jumpT = 1;
       }
     }
@@ -1840,6 +1845,82 @@ class Game {
       if (c.flag >= 0) { g.font = `${14 * D}px sans-serif`; g.fillText('🚩', s.x + w / 2 + 2 * D, y); g.font = `600 ${11 * D}px system-ui, sans-serif`; }
     }
   }
+  // Minikarte unten rechts: großer Ausschnitt um den Spieler, Norden oben, Basen/Flaggen am Rand, wenn außerhalb
+  drawMinimap(g, SW, SH, D, touch, p) {
+    const W = this.world, mini = this.mini;
+    const S = clamp(Math.min(SW, SH) * 0.36, 170 * D, 320 * D);
+    const mx = touch ? 12 * D : SW - S - 14 * D, my = touch ? 62 * D : SH - S - 14 * D;
+    const R = 240, k = S / (2 * R);
+    const cx = p && p.alive ? p.x : this.cam.x, cy = p && p.alive ? p.y : this.cam.y;
+    const X = x => mx + S / 2 + (x - cx) * k, Y = y => my + S / 2 + (y - cy) * k;
+    const m = 13 * D;
+    const clampPt = (x, y) => {   // auf den Rand ziehen, wenn außerhalb
+      let sx = X(x), sy = Y(y), out = false;
+      if (sx < mx + m || sx > mx + S - m || sy < my + m || sy > my + S - m) {
+        out = true;
+        const dx = sx - (mx + S / 2), dy = sy - (my + S / 2), f = (S / 2 - m) / Math.max(Math.abs(dx), Math.abs(dy));
+        sx = mx + S / 2 + dx * f; sy = my + S / 2 + dy * f;
+      }
+      return [sx, sy, out];
+    };
+    g.save();
+    g.fillStyle = 'rgba(0,0,0,0.35)'; g.beginPath(); g.roundRect(mx + 3 * D, my + 4 * D, S, S, 14 * D); g.fill();
+    g.beginPath(); g.roundRect(mx, my, S, S, 14 * D); g.save(); g.clip();
+    g.fillStyle = '#1b1f22'; g.fillRect(mx, my, S, S);
+    g.imageSmoothingEnabled = true;
+    g.drawImage(mini, X(0), Y(0), W.w * k, W.h * k);
+    // Blickrichtung der Kamera
+    if (p && p.alive && this.camMode === 'chase') {
+      const a = this.camYaw, r = 70 * D;
+      const gr = g.createRadialGradient(X(p.x), Y(p.y), 0, X(p.x), Y(p.y), r);
+      gr.addColorStop(0, 'rgba(255,255,255,0.28)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = gr; g.beginPath(); g.moveTo(X(p.x), Y(p.y)); g.arc(X(p.x), Y(p.y), r, a - 0.55, a + 0.55); g.closePath(); g.fill();
+    }
+    const arrow = (x, y, a, s, fill, stroke, lw) => {
+      g.save(); g.translate(x, y); g.rotate(a);
+      g.beginPath(); g.moveTo(s, 0); g.lineTo(-s * 0.75, -s * 0.7); g.lineTo(-s * 0.35, 0); g.lineTo(-s * 0.75, s * 0.7); g.closePath();
+      g.fillStyle = fill; g.fill(); g.strokeStyle = stroke; g.lineWidth = lw; g.stroke(); g.restore();
+    };
+    const flagIcon = (x, y, f, s) => {
+      g.strokeStyle = '#111'; g.lineWidth = 2 * D; g.beginPath(); g.moveTo(x, y + s * 0.5); g.lineTo(x, y - s); g.stroke();
+      g.fillStyle = TEAM[f.team].color; g.strokeStyle = '#fff'; g.lineWidth = 1.5 * D;
+      g.beginPath(); g.moveTo(x, y - s); g.lineTo(x + s * 0.95, y - s * 0.62); g.lineTo(x, y - s * 0.25); g.closePath(); g.fill(); g.stroke();
+    };
+    // Basen
+    for (let i = 0; i < 2; i++) {
+      const b = W.bases[i], [sx, sy, out] = clampPt(b.x, b.y), r = (out ? 7 : 10) * D;
+      g.fillStyle = TEAM[i].color; g.strokeStyle = '#fff'; g.lineWidth = 2.5 * D;
+      g.beginPath(); g.arc(sx, sy, r, 0, 7); g.fill(); g.stroke();
+      g.fillStyle = '#fff'; g.font = `900 ${Math.round((out ? 8 : 10) * D)}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(TEAM[i].short[0], sx, sy + 0.5 * D);
+    }
+    // Autos (eigenes Team immer, Gegner nur in der Nähe oder mit Flagge)
+    for (const c of this.cars) {
+      if (!c.alive || c.isPlayer) continue;
+      const near = c.team === p.team || c.flag >= 0 || d2(c.x, c.y, p.x, p.y) < 90 * 90;
+      if (!near) continue;
+      const mate = c.team === p.team;
+      arrow(X(c.x), Y(c.y), c.a, 7.5 * D, TEAM[c.team].color, mate ? '#ffffff' : '#111111', 1.6 * D);
+    }
+    // Flaggen (getragen: pulsierender Ring um den Träger)
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 160);
+    for (const f of this.flags) {
+      const fx = f.carrier ? f.carrier.x : f.x, fy = f.carrier ? f.carrier.y : f.y;
+      const [sx, sy, out] = clampPt(fx, fy);
+      if (f.carrier) {
+        g.strokeStyle = TEAM[f.team].light; g.lineWidth = 2.5 * D; g.globalAlpha = 0.5 + 0.5 * pulse;
+        g.beginPath(); g.arc(sx, sy, (11 + 4 * pulse) * D, 0, 7); g.stroke(); g.globalAlpha = 1;
+      } else if (f.state !== 'base' && pulse < 0.3) continue;   // liegende Flagge blinkt
+      flagIcon(sx + 2 * D, sy - 2 * D, f, (out ? 9 : 12) * D);
+    }
+    // eigener Pfeil obenauf
+    if (p && p.alive) arrow(X(p.x), Y(p.y), p.a, 10 * D, '#ffffff', '#000000', 2 * D);
+    g.restore();
+    g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = 2 * D; g.beginPath(); g.roundRect(mx, my, S, S, 14 * D); g.stroke();
+    g.fillStyle = '#fff'; g.font = `800 ${Math.round(11 * D)}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('N', mx + S / 2, my + 10 * D);
+    g.restore();
+  }
   drawHUD(g, left, top, time) {
     const D = this.dpr * this.hud, SW = this.canvas.width, SH = this.canvas.height;
     const p = this.player;
@@ -1995,35 +2076,8 @@ class Game {
       fy += 26 * D;
       g.globalAlpha = 1;
     }
-    // Minikarte
-    const mini = this.mini;
-    const ms = Math.min(1, (Math.min(SW, SH) * 0.28) / Math.max(mini.width, mini.height)) * D * 0.9;
-    const mw = mini.width * ms, mh = mini.height * ms;
-    const mx = touch ? 12 * D : SW - mw - 12 * D, my = touch ? 62 * D : SH - mh - 12 * D;
-    g.globalAlpha = 0.88; g.drawImage(mini, mx, my, mw, mh); g.globalAlpha = 1;
-    g.strokeStyle = 'rgba(255,255,255,0.4)'; g.lineWidth = 1.5 * D; g.strokeRect(mx, my, mw, mh);
-    const sc = mw / this.world.w;
-    // Sichtfeld
-    g.strokeStyle = 'rgba(255,255,255,0.5)'; g.lineWidth = 1 * D;
-    const vr = this.viewRect;
-    g.strokeRect(mx + clamp(vr.x0, 0, this.world.w) * sc, my + clamp(vr.y0, 0, this.world.h) * sc, (clamp(vr.x1, 0, this.world.w) - clamp(vr.x0, 0, this.world.w)) * sc, (clamp(vr.y1, 0, this.world.h) - clamp(vr.y0, 0, this.world.h)) * sc);
-    for (let i = 0; i < 2; i++) {
-      const b = this.world.bases[i];
-      g.fillStyle = TEAM[i].color + '88'; g.beginPath(); g.arc(mx + b.x * sc, my + b.y * sc, 6 * D, 0, 7); g.fill();
-    }
-    for (const c of this.cars) {
-      if (!c.alive) continue;
-      const near = c.team === p.team || c.flag >= 0 || d2(c.x, c.y, p.x, p.y) < 90 * 90;
-      if (!near) continue;
-      g.fillStyle = c.isPlayer ? '#fff' : TEAM[c.team].color;
-      g.beginPath(); g.arc(mx + c.x * sc, my + c.y * sc, (c.isPlayer ? 3.5 : 2.6) * D, 0, 7); g.fill();
-      if (c.isPlayer) { g.strokeStyle = '#000'; g.lineWidth = 1; g.stroke(); }
-    }
-    for (const f of this.flags) {
-      g.fillStyle = TEAM[f.team].light; g.strokeStyle = '#000'; g.lineWidth = 1;
-      const x = mx + f.x * sc, y = my + f.y * sc;
-      g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - 10 * D); g.lineTo(x + 7 * D, y - 7 * D); g.lineTo(x, y - 4 * D); g.closePath(); g.fill(); g.stroke();
-    }
+    // Minikarte: großer Ausschnitt um den Spieler (Norden oben), kontrastreich
+    this.drawMinimap(g, SW, SH, D, touch, p);
     // Pfeile zu Flaggen außerhalb des Bildes
     for (const f of this.flags) {
       if (f.carrier && f.carrier.isPlayer) continue;
