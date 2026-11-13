@@ -25,7 +25,7 @@ const WEAPONS = {
   mg: { name: 'Doppel-MG', speed: 125, life: 0.5, spread: 0.035, count: 1, splash: 0, size: 0.35, color: '#ffe27a', sound: 'mg' },
   minigun: { name: 'Minigun', speed: 120, life: 0.48, spread: 0.085, count: 1, splash: 0, size: 0.3, color: '#ffd04d', sound: 'mini' },
   cannon: { name: 'Kanone', speed: 72, life: 1.1, spread: 0.01, count: 1, splash: 4.5, size: 0.7, color: '#ffb347', sound: 'cannon' },
-  rocket: { name: 'Raketen', speed: 42, life: 1.9, spread: 0.02, count: 1, splash: 5, size: 0.55, color: '#ff7b39', homing: 0.55, accel: 22, maxSpeed: 68, sound: 'rocket' },
+  rocket: { name: 'Raketen', speed: 42, life: 1.9, spread: 0.02, count: 1, splash: 5, size: 0.55, color: '#ff7b39', homing: 0.32, accel: 22, maxSpeed: 68, sound: 'rocket' },
   shotgun: { name: 'Schrotflinte', speed: 95, life: 0.3, spread: 0.24, count: 7, splash: 0, size: 0.3, color: '#fff1b0', sound: 'shotgun' },
 };
 

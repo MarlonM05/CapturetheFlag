@@ -33,13 +33,13 @@ Hinweise:
 ## Spielmechanik (Motor-Wars-Stil)
 - **Fahrzeugklassen** (vor jedem Match frei wählbar, auch in der Online-Lobby):
   Schussen-Flitzer (ausgewogen, Doppel-MG) · Hornisse (schneller Buggy, Minigun, wenig Panzerung) ·
-  Mehlsack-Panzer (schwerer Truck, Kanone mit Nachladezeit) · Raketen-Rudi (leicht lenkende Raketen – ausweichbar) · Allgäu-Bock (Springer, Schrotflinte).
+  Mehlsack-Panzer (schwerer Truck, Kanone mit Nachladezeit) · Raketen-Rudi (Raketen lenken nur ein kleines bisschen – ausweichbar) · Allgäu-Bock (Springer, Schrotflinte).
 - **Drift:** `Q` + Lenken – Heck bricht aus, engere Kurven bei vollem Tempo.
 - **Sprung + Nitro:** `Leertaste` springt auch im Stand; `Shift` in der Luft gibt Schub und Auftrieb → gleiten/fliegen, solange das Nitro reicht.
 - **Dächer-Hüpfen:** höhere Sprünge; Sprung + Nitro steigt bis gut 20 m und trägt über Häuser. Auf Satteldächern landet man auf den Ziegeln.
 - **Nitro laden:** schneller als vorher, Bonus beim Driften (`Q`), in der Luft und für jeden sauberen Salto.
 - **Minikarte (unten rechts):** großer Ausschnitt um dich, helle Straßen, dunkle Häuser, Basen R/B, Flaggen (getragene Flagge mit pulsierendem Ring), Pfeile für dich, Team und Gegner in der Nähe.
-- **Kamera & Zielen:** Kamera hängt hinter dem Auto, Fadenkreuz fest in der Bildmitte über dem Dach. Klick ins Spiel fängt die Maus ein: Maus-Blick nach links/rechts/oben/unten, der nach ~1,5 s beim Fahren wieder hinter das Auto schwenkt (Esc gibt die Maus frei).
+- **Kamera & Zielen:** Kamera hängt hinter dem Auto, Fadenkreuz fest in der Bildmitte über dem Dach. Klick ins Spiel fängt die Maus ein: Maus-Blick volle 360° rundum (auch nach hinten schießen) und hoch/runter; der Blick bleibt, wohin du schaust (Esc gibt die Maus frei).
 - **Doppelsprung (Rocket-League-Stil):** in der Luft Leertaste erneut drücken – sofort, ohne Abklingzeit; mit W/A/S/D als Ausweichsprung (Stoß + Salto in die Richtung). Wird bei der Landung zurückgesetzt.
 - **Online nachjoinen:** wer während eines Matches mit dem Code beitritt, ersetzt einen Bot im Team mit weniger echten Spielern. Wer rausfliegt, wird zum Bot; joint er wieder (gleicher Name), bekommt er sein altes Auto samt Punkten zurück.
 - **Verbindung:** jede Verbindung läuft sofort über den Supabase-Server und schaltet automatisch auf direkt (WebRTC) um, sobald das klappt – und zurück, wenn die direkte Leitung stumm wird. Über den Server wird der Spielstand einmal für alle gesendet, die Rate passt sich der Spielerzahl an.

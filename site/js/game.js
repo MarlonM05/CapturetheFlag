@@ -509,11 +509,10 @@ class Game {
         if (!this.demo) {
           const M = Input.mouse;
           if (M.dx || M.dy) {
-            this.lookYaw = clamp((this.lookYaw || 0) + M.dx * 0.0032, -2.6, 2.6);
+            this.lookYaw = angNorm((this.lookYaw || 0) + M.dx * 0.0032);   // volle 360° Rundumsicht
             this.lookPitch = clamp((this.lookPitch || 0) - M.dy * 0.0024, -0.35, 0.65);
             this.lookIdle = 0; M.dx = 0; M.dy = 0;
           } else this.lookIdle = (this.lookIdle || 0) + dt;
-          if (this.lookIdle > 1.4 && p.speed > 6) { const k = Math.exp(-dt * 2.2); this.lookYaw *= k; this.lookPitch *= k; }
         }
       }
       this.viewYaw = this.camYaw + (this.lookYaw || 0);
@@ -1034,12 +1033,12 @@ class Game {
         const sp = Math.hypot(b.vx, b.vy);
         const nsp = Math.min(sp + b.w.accel * dt, b.w.maxSpeed || 70);
         let ang = Math.atan2(b.vy, b.vx);
-        let best = null, bd = 32 * 32;
+        let best = null, bd = 28 * 28;
         for (const o of this.cars) {
           // nur Ziele in einem schmalen Kegel vorne; wer springt oder fliegt, ist schwer zu verfolgen
           if (!o.alive || o.team === b.team || o.z - b.z > 2.5) continue;
           const dd = d2(b.x, b.y, o.x, o.y);
-          if (dd < bd && Math.abs(angNorm(Math.atan2(o.y - b.y, o.x - b.x) - ang)) < 0.35) { bd = dd; best = o; }
+          if (dd < bd && Math.abs(angNorm(Math.atan2(o.y - b.y, o.x - b.x) - ang)) < 0.28) { bd = dd; best = o; }
         }
         if (best) ang += clamp(angNorm(Math.atan2(best.y - b.y, best.x - b.x) - ang), -b.w.homing * dt, b.w.homing * dt);
         b.vx = Math.cos(ang) * nsp; b.vy = Math.sin(ang) * nsp;
