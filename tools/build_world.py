@@ -82,14 +82,26 @@ LANDMARKS = [
     dict(t="mehlsack", x=693.0, y=1539.0, a=0.0),
     dict(t="veitsburg", x=781.0, y=1699.0, a=0.35),
 ]
-BASES = [(730.0, 292.0), (540.0, 1268.0)]   # Rot (Weingarten), Blau (Ravensburg)
+BASES = [(818.0, 262.0), (540.0, 1268.0)]   # Rot (Weingarten, auf dem Basilika-Vorplatz), Blau (Ravensburg)
+# Basilika-Vorplatz: gepflasterte Terrasse auf Fassadenhöhe mit geschwungenen Stützmauern und zwei breiten Rampen
+TERRACE = dict(x0=790.0, x1=851.0, y0=194.0, y1=330.0, r=22.0)
+TERRACE_RAMPS = [((792.0, 214.0), (752.0, 196.0), 14.0), ((792.0, 310.0), (752.0, 328.0), 14.0)]
+
+
+def terrace_poly():
+    t = TERRACE
+    return box(t["x0"], t["y0"], t["x1"], t["y1"]).buffer(-t["r"]).buffer(t["r"], resolution=8)
+
+
+def terrace_area():
+    return unary_union([terrace_poly()] + [LineString([a, b]).buffer(w / 2 + 1.5, cap_style=2) for a, b, w in TERRACE_RAMPS])
 
 
 def landmark_boxes(lm):
     """Kollisions-Grundrisse (lokal: dx, dy, Breite, Tiefe, Höhe) der Wahrzeichen."""
     t = lm["t"]
     if t == "basilika":
-        return [(0, 0, 100, 26, 24), (12, 0, 24, 46, 24), (-46, -14, 11, 11, 58), (-46, 14, 11, 11, 58), (12, 0, 16, 16, 44)]
+        return [(0, 0, 100, 26, 24), (12, 0, 24, 46, 24), (-46, -14, 11, 11, 58), (-46, 14, 11, 11, 58), (12, 0, 16, 16, 44), (-55, 0, 10, 17, 30)]
     if t == "blaserturm":
         return [(0, 0, 8, 8, 52)]
     if t == "mehlsack":
@@ -131,7 +143,7 @@ def main():
 
     # ---- Städte zusammenführen ----
     buildings, roads, areas, water, trees, labels = [], [], [], [], [], []
-    lm_union = unary_union([p.buffer(3) for lm in LANDMARKS for p, _ in lm_polys(lm)])
+    lm_union = unary_union([p.buffer(3) for lm in LANDMARKS for p, _ in lm_polys(lm)] + [terrace_area().buffer(2)])
     for tid, d in towns.items():
         ox, oy = OFF[tid]
         for b in d["buildings"]:
@@ -255,6 +267,38 @@ def main():
         target = prof - np.maximum(0, d - (w / 2 + 2.6)) * 1.8
         hz = np.where(d < w / 2 + 2.6 + 20, np.maximum(hz, target), hz)
 
+    # ---- Basilika-Vorplatz (Terrasse) ----
+    tp = terrace_poly()
+    zt = sample(hz, TERRACE["x1"] - 3, (TERRACE["y0"] + TERRACE["y1"]) / 2)
+    from shapely import vectorized as shv
+    inside = shv.contains(tp, gx, gy) | shv.contains(tp.buffer(2.5), gx, gy)
+    hz = np.where(inside, zt, hz)
+    # Rampen von der Terrasse hinunter (nur aufschütten, mit Böschung)
+    for (pa, pb, w) in TERRACE_RAMPS:
+        d, arc = seg_dist([pa, pb])
+        L = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
+        zb = sample(hz, pb[0], pb[1])
+        prof = zt + (zb - zt) * np.clip(arc / L, 0, 1)
+        target = prof - np.maximum(0, d - (w / 2 + 1.0)) * 1.2
+        hz = np.where(d < w / 2 + 14, np.maximum(hz, target), hz)
+    # Stützmauern entlang des Randes (Lücken an den Rampen, Ostseite stößt an die Basilika)
+    ring = tp.exterior
+    n_seg = int(ring.length / 5)
+    pts = [ring.interpolate(i / n_seg, normalized=True) for i in range(n_seg + 1)]
+    mouths = [Point(pa) for pa, _, _ in TERRACE_RAMPS]
+    for a, b in zip(pts, pts[1:]):
+        mx, my = (a.x + b.x) / 2, (a.y + b.y) / 2
+        if mx > TERRACE["x1"] - 4 or any(Point(mx, my).distance(m) < 9.5 for m in mouths):
+            continue
+        rails.append(dict(p=[R1(a.x), R1(a.y), R1(zt), R1(b.x), R1(b.y), R1(zt)], w=1))
+    for (pa, pb, w) in TERRACE_RAMPS:   # niedrige Mauern an den Rampenseiten
+        L = math.hypot(pb[0] - pa[0], pb[1] - pa[1]); ux, uy = (pb[0] - pa[0]) / L, (pb[1] - pa[1]) / L
+        za, zb = zt, sample(hz, pb[0], pb[1])
+        for sgn in (1, -1):
+            ox, oy = -uy * (w / 2 + 0.6) * sgn, ux * (w / 2 + 0.6) * sgn
+            rails.append(dict(p=[R1(pa[0] + ox), R1(pa[1] + oy), R1(za), R1(pb[0] - ux * 6 + ox), R1(pb[1] - uy * 6 + oy), R1(za + (zb - za) * (L - 6) / L)], w=1))
+    plaza_area = terrace_area()
+
     # Tunnel durch den Hügel
     tun_route = q["Tunnelstraße"]
     tline = LineString(tun_route)
@@ -274,7 +318,7 @@ def main():
         tunnel["p"] += [R1(p.x), R1(p.y), R1(sample(floor_grid, p.x, p.y))]
 
     # Basen einebnen
-    for bx, by in BASES:
+    for bx, by in BASES[1:]:   # Rot steht schon auf der ebenen Terrasse
         d = np.hypot(gx - bx, gy - by)
         h0 = sample(hz, bx, by)
         f = np.clip((d - 16) / 14, 0, 1)
@@ -334,6 +378,61 @@ def main():
     for g in (meadow.geoms if hasattr(meadow, "geoms") else [meadow]):
         if isinstance(g, Polygon) and g.area > 100:
             areas.append(dict(t="green", p=flat(list(g.exterior.coords)[:-1])))
+    # ---- Dichtere Bebauung im Tal: Häuser mit Satteldach entlang der Straßen, gepflasterte Höfe ----
+    from shapely.strtree import STRtree
+    from shapely import affinity
+    rlines = [(LineString(list(zip(r["p"][0::2], r["p"][1::2]))), r["w"]) for r in roads if r["k"] <= 1 and len(r["p"]) >= 4]
+    rtree = STRtree([l for l, _ in rlines])
+    road_buf = unary_union([l.buffer(w / 2 + 4.5) for l, w in rlines])
+    keep_out = unary_union([river_line.buffer(46), plaza_area.buffer(10), tline.buffer(26),
+                            *[Point(x, y).buffer(42) for x, y in BASES], *[Point(x, y).buffer(30) for x, y, _ in JUMP_RAMPS],
+                            *[LineString(pp).buffer(w / 2 + 14) for (pp, _, w) in embank],
+                            *[LineString([(dk["p"][0], dk["p"][1]), (dk["p"][3], dk["p"][4])]).buffer(dk["w"] / 2 + 14) for dk in decks]])
+    occupied_b = STRtree([Polygon(list(zip(b["p"][0::2], b["p"][1::2]))).buffer(0) for b in buildings])
+    gyy0, gxx0 = np.gradient(hz, RES)
+    slope_g = np.hypot(gxx0, gyy0)
+    houses = []
+    G = 17.0
+    for gyv in np.arange(8, H - 8, G):
+        for gxv in np.arange(8, W - 8, G):
+            cx, cy = gxv + rnd.uniform(-4, 4), gyv + rnd.uniform(-4, 4)
+            c = Point(cx, cy)
+            if not meadow.contains(c) or keep_out.contains(c):
+                continue
+            near = [i for i in rtree.query(c.buffer(64))]
+            if not near:
+                continue
+            best = min(near, key=lambda i: rlines[i][0].distance(c))
+            line, rw = rlines[best]
+            dd = line.distance(c)
+            if dd < rw / 2 + 9 or dd > rw / 2 + 50:
+                continue
+            ix, iy = int(cx / RES), int(cy / RES)
+            if slope_g[min(iy, ny - 1), min(ix, nx - 1)] > 0.22:
+                continue
+            s_ = line.project(c); pa_, pb_ = line.interpolate(max(0, s_ - 2)), line.interpolate(s_ + 2)
+            ang = math.atan2(pb_.y - pa_.y, pb_.x - pa_.x)
+            bw, bd = rnd.uniform(10, 15), rnd.uniform(8.5, 11)
+            fp = affinity.rotate(box(cx - bw / 2, cy - bd / 2, cx + bw / 2, cy + bd / 2), ang, origin=(cx, cy), use_radians=True)
+            if fp.intersects(road_buf) or fp.intersects(keep_out) or not meadow.contains(fp):
+                continue
+            if any(occupied_b.geometries[i].distance(fp) < 7 for i in occupied_b.query(fp.buffer(8))) or any(h_.distance(fp) < 9 for h_ in houses[-60:]):
+                continue
+            zs = [sample(hz, x, y) for x, y in fp.exterior.coords[:-1]]
+            if max(zs) - min(zs) > 2.5:
+                continue
+            houses.append(fp)
+    for fp in houses:
+        buildings.append(dict(p=flat([(R1(x), R1(y)) for x, y in fp.exterior.coords[:-1]]), h=R1(rnd.uniform(7, 11.5)), c=0))
+    yards = unary_union([fp.buffer(6, join_style=2) for fp in houses]).intersection(meadow).difference(river_line.buffer(16))
+    for g in ([yards] if isinstance(yards, Polygon) else getattr(yards, "geoms", [])):
+        if isinstance(g, Polygon) and g.area > 40:
+            areas.append(dict(t="paved", p=flat([(R1(x), R1(y)) for x, y in g.simplify(0.8).exterior.coords[:-1]])))
+    for g in ([plaza_area] if isinstance(plaza_area, Polygon) else plaza_area.geoms):
+        areas.append(dict(t="paved", p=flat([(R1(x), R1(y)) for x, y in g.simplify(0.5).exterior.coords[:-1]]), cob=1))
+    print("Neue Häuser im Tal:", len(houses), file=sys.stderr)
+    trees[:] = [(x, y) for x, y in trees if not plaza_area.buffer(4).contains(Point(x, y))]
+    house_buf = unary_union([fp.buffer(3) for fp in houses]) if houses else None
     # Bäume (nur Deko) an Ufer und Hängen
     for _ in range(900):
         x, y = rnd.uniform(0, W), rnd.uniform(0, H)
@@ -344,6 +443,8 @@ def main():
         if dr < 12 or any(LineString(p).distance(pt) < w / 2 + 4 for _, w, _, p in ROUTES):
             continue
         hz_here = sample(hz - base, x, y)
+        if house_buf is not None and house_buf.contains(pt):
+            continue
         if dr < 40 or hz_here > 6 or rnd.random() < 0.12:
             trees.append((x, y))
     labels += [
@@ -398,7 +499,7 @@ def main():
                 return float(xs[i] * C), float(ys[i] * C)
         return float(xs[i] * C), float(ys[i] * C)
 
-    bases = [snap(x, y, 10) for x, y in BASES]
+    bases = [BASES[0]] + [snap(x, y, 10) for x, y in BASES[1:]]
     base_out = [dict(x=R1(x), y=R1(y), n=n) for (x, y), n in zip(bases, ["Münsterplatz", "Marienplatz"])]
 
     occupied = [(x, y) for x, y, _ in JUMP_RAMPS]

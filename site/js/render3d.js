@@ -364,7 +364,7 @@ class Renderer3D {
       const cTrim = wc.clone().lerp(R3.col('#ffffff'), 0.45);
       let A2 = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; A2 += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; }
       const so = A2 > 0 ? 1 : -1;
-      const roofed = !b.flat && (n === 4 || (n <= 10 && this.convex(p)));
+      const roofed = !!b.rf;
       // Wände
       let run = 0;
       for (let i = 0; i < n; i++) {
@@ -391,7 +391,7 @@ class Renderer3D {
         if (len(1) > len(0)) k = 1;
         const P = i => [p[((i + k) % 4) * 2], p[((i + k) % 4) * 2 + 1]];
         const [p0, p1, p2, p3] = [P(0), P(1), P(2), P(3)];
-        const half = len((k + 1) % 4) / 2, rise = Math.min(4.5, half * 0.85);
+        const half = b.rf.half, rise = b.rf.rise;
         const rh = h + rise;
         const m0 = [(p0[0] + p3[0]) / 2, (p0[1] + p3[1]) / 2], m1 = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
         // Dachüberstand: an der Traufe 0,55 m nach außen (entlang der Dachneigung), am Giebel 0,4 m
@@ -423,7 +423,7 @@ class Renderer3D {
         }
       } else if (!b.flat && n <= 10 && this.convex(p)) {
         let A = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; A += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; }
-        const rh = h + Math.min(4, Math.sqrt(Math.abs(A / 2)) * 0.22 + 1.2);
+        const rh = h + b.rf.rise;
         const apex = [b.cx, rh, b.cy];
         const ex = (x, y) => { const vx = x - b.cx, vy = y - b.cy, l = Math.hypot(vx, vy) || 1; return [x + vx / l * 0.55, h - 0.3, y + vy / l * 0.55]; };
         for (let i = 0; i < n; i++) {
@@ -435,6 +435,31 @@ class Renderer3D {
           const sl = Math.hypot(dist, rh - h) / 3;
           tri(roofB, ex(ax, ay), ex(bx, by), apex, i % 2 ? rc : rc.clone().multiplyScalar(0.86), [0, 0], [L / 3, 0], [tproj / 3, sl]);
         }
+      } else if (b.rf && b.rf.t === 3) {
+        // umlaufend geneigtes Dach (Mansarde) mit Überstand für verwinkelte Grundrisse
+        const d = b.rf.d, rh = h + b.rf.rise, inn = [], out = [];
+        for (let i = 0; i < n; i++) {
+          const ip = (i + n - 1) % n, inx = (i + 1) % n;
+          const e1x = p[i * 2] - p[ip * 2], e1y = p[i * 2 + 1] - p[ip * 2 + 1], e2x = p[inx * 2] - p[i * 2], e2y = p[inx * 2 + 1] - p[i * 2 + 1];
+          const l1 = Math.hypot(e1x, e1y) || 1, l2 = Math.hypot(e2x, e2y) || 1;
+          const n1x = -so * e1y / l1, n1y = so * e1x / l1, n2x = -so * e2y / l2, n2y = so * e2x / l2;   // nach innen
+          let mx = n1x + n2x, my = n1y + n2y; const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
+          const L = Math.min(d * 2.2, d / Math.max(0.35, mx * n1x + my * n1y));
+          inn.push([p[i * 2] + mx * L, p[i * 2 + 1] + my * L]);
+          out.push([p[i * 2] - mx * 0.45, p[i * 2 + 1] - my * 0.45]);
+        }
+        const ez = h - 0.45 * b.rf.rise / d;
+        for (let i = 0; i < n; i++) {
+          const j = (i + 1) % n, col = i % 2 ? rc : rc.clone().multiplyScalar(0.86);
+          const L = Math.hypot(out[j][0] - out[i][0], out[j][1] - out[i][1]) / 3, sl = Math.hypot(d, b.rf.rise) / 3;
+          tri(roofB, [out[i][0], ez, out[i][1]], [out[j][0], ez, out[j][1]], [inn[j][0], rh, inn[j][1]], col, [0, 0], [L, 0], [L, sl]);
+          tri(roofB, [out[i][0], ez, out[i][1]], [inn[j][0], rh, inn[j][1]], [inn[i][0], rh, inn[i][1]], col, [0, 0], [L, sl], [0, sl]);
+        }
+        let tris = [];
+        const ipts = inn.map(([x, y]) => new THREE.Vector2(x, y));
+        try { tris = THREE.ShapeUtils.triangulateShape(ipts, []); } catch (e) { /* egal */ }
+        const cc = rc.clone().multiplyScalar(0.78);
+        for (const t of tris) { const A = ipts[t[0]], B = ipts[t[2]], C = ipts[t[1]]; tri(roofB, [A.x, rh, A.y], [B.x, rh, B.y], [C.x, rh, C.y], cc, [A.x / 3, A.y / 3], [B.x / 3, B.y / 3], [C.x / 3, C.y / 3]); }
       } else {
         const pts = [];
         for (let i = 0; i < n; i++) pts.push(new THREE.Vector2(p[i * 2], p[i * 2 + 1]));
@@ -614,8 +639,20 @@ class Renderer3D {
   // ---------------- Leitplanken an den Brückendämmen ----------------
   buildRails() {
     const W = this.game.world, m = this.mat({ color: '#d0d3d6' }), post = this.mat({ color: '#8a8d90' });
+    const stoneM = this.mat({ color: '#cfc6b4' }), capM = this.mat({ color: '#e6dfd0' });
     for (const r of W.rails) {
       const L = Math.hypot(r.bx - r.ax, r.by - r.ay); if (L < 1) continue;
+      if (r.w) {
+        // Stützmauer: vom tiefsten Gelände daneben bis 0,9 m über die Fläche, mit heller Abdeckplatte
+        const mx = (r.ax + r.bx) / 2, my = (r.ay + r.by) / 2, nx = -(r.by - r.ay) / L, ny = (r.bx - r.ax) / L;
+        const zl = Math.min(W.terrain(mx + nx * 2.5, my + ny * 2.5), W.terrain(mx - nx * 2.5, my - ny * 2.5), (r.az + r.bz) / 2) - 0.6;
+        const zt = (r.az + r.bz) / 2 + 0.9, hh = zt - zl;
+        const wg = new THREE.Mesh(this.track(new THREE.BoxGeometry(L + 0.5, hh, 0.7)), stoneM);
+        wg.position.set(mx, zl + hh / 2, my); wg.rotation.order = 'YZX'; wg.rotation.y = -Math.atan2(r.by - r.ay, r.bx - r.ax); wg.rotation.z = Math.atan2(r.bz - r.az, L);
+        wg.castShadow = true; wg.receiveShadow = true; this.scene.add(wg);
+        const cp = new THREE.Mesh(this.track(roundBox(L + 0.6, 0.18, 0.9, 0.06)), capM); cp.position.set(mx, zt + 0.09, my); cp.rotation.copy(wg.rotation); this.scene.add(cp);
+        continue;
+      }
       const g = new THREE.Mesh(this.track(new THREE.BoxGeometry(L, 0.35, 0.18)), m);
       g.position.set((r.ax + r.bx) / 2, (r.az + r.bz) / 2 + 0.8, (r.ay + r.by) / 2);
       g.rotation.order = 'YZX'; g.rotation.y = -Math.atan2(r.by - r.ay, r.bx - r.ax); g.rotation.z = Math.atan2(r.bz - r.az, L);
@@ -704,20 +741,8 @@ class Renderer3D {
     for (const lm of W.landmarks) {
       const g = new THREE.Group();
       g.position.set(lm.x, W.terrain(lm.x, lm.y) - 0.5, lm.y); g.rotation.y = -lm.a;
-      if (lm.t === 'basilika') {
-        // Basilika St. Martin: weiße Barockfassade, Doppeltürme, Kuppel über der Vierung
-        box(g, 100, 24.5, 26, white, 0, 0, 0); prism(g, 100, 26, 9, roofDark, 0, 24.5, 0);
-        box(g, 24, 24.5, 46, white, 12, 0, 0);
-        const tr = prism(g, 46, 24, 8.5, roofDark, 12, 24.5, 0); tr.rotation.y = Math.PI / 2;
-        cyl(g, 8.5, 8.5, 9, 16, white, 12, 26, 0); dome(g, 8.6, copper, 12, 35, 0, 1.15);
-        cyl(g, 1.8, 1.8, 4, 8, white, 12, 44.5, 0); cyl(g, 0, 1.9, 3, 8, copper, 12, 48.5, 0);
-        for (const zz of [-14, 14]) {
-          box(g, 11, 44, 11, white, -46, 0, zz); box(g, 9, 7, 9, cream, -46, 44, zz);
-          dome(g, 4.8, copper, -46, 51, zz, 1.4); cyl(g, 0.9, 0.9, 3, 8, copper, -46, 57.5, zz); cyl(g, 0, 1.1, 2.5, 8, copper, -46, 60.5, zz);
-        }
-        box(g, 2, 30, 18, cream, -51, 0, 0);             // Fassade zwischen den Türmen
-        const ped = prism(g, 18, 2.5, 6, cream, -51, 30, 0); ped.rotation.y = Math.PI / 2;
-      } else if (lm.t === 'blaserturm') {
+      if (lm.t === 'basilika') this.buildBasilika(g, { box, cyl, dome, prism, white, cream, copper });
+      else if (lm.t === 'blaserturm') {
         // Blaserturm am Marienplatz: Quaderschaft, achteckiger Aufsatz, grüne Haube
         box(g, 8, 36, 8, sand, 0, 0, 0); box(g, 8.6, 1, 8.6, stone, 0, 36, 0);
         cyl(g, 4.2, 4.4, 8, 8, white, 0, 37, 0); dome(g, 4.2, copper, 0, 45, 0, 1.3);
@@ -735,6 +760,87 @@ class Renderer3D {
       g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
       this.scene.add(g);
     }
+  }
+  // Basilika St. Martin: helle Barockfassade mit Pilastern und Rundbogenfenstern, Doppeltürme mit Kupferhauben,
+  // steile rote Ziegeldächer über Langhaus und Querhaus, Kuppel mit Tambour über der Vierung
+  buildBasilika(g, H) {
+    const { cyl, dome, copper } = H, T = this.makeTextures();
+    const tex = (w, h, draw) => { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); const t = this.track(new THREE.CanvasTexture(c)); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = this.gl.capabilities.getMaxAnisotropy(); return t; };
+    const archP = (x, y, w, h, gg) => { gg.beginPath(); gg.moveTo(x, y + h); gg.lineTo(x, y + w / 2); gg.arc(x + w / 2, y + w / 2, w / 2, Math.PI, 0); gg.lineTo(x + w, y + h); gg.closePath(); };
+    // Fassade: 8 m × 8 m Kachel – Pilaster, Gesims, Rundbogenfenster mit Rahmen
+    const baroque = tex(256, 256, (gg, w, h) => {
+      gg.fillStyle = '#efe6d2'; gg.fillRect(0, 0, w, h);
+      for (const x of [0, w - 26]) { const gr = gg.createLinearGradient(x, 0, x + 26, 0); gr.addColorStop(0, '#f8f2e4'); gr.addColorStop(1, '#d8ccb0'); gg.fillStyle = gr; gg.fillRect(x, 0, 26, h); }
+      gg.fillStyle = '#ddd1b6'; gg.fillRect(0, 0, w, 10); gg.fillStyle = 'rgba(0,0,0,0.18)'; gg.fillRect(0, 10, w, 4);
+      gg.fillStyle = '#d9cdb0'; archP(78, 58, 100, 160, gg); gg.fill();
+      const gl = gg.createLinearGradient(0, 70, 0, 210); gl.addColorStop(0, '#55687a'); gl.addColorStop(1, '#2c3846'); gg.fillStyle = gl; archP(90, 70, 76, 142, gg); gg.fill();
+      gg.fillStyle = 'rgba(230,224,210,0.9)'; gg.fillRect(126, 70, 4, 142); gg.fillRect(90, 140, 76, 3);
+      gg.fillStyle = '#cfc2a4'; gg.fillRect(72, 214, 112, 9);
+      gg.fillStyle = 'rgba(0,0,0,0.25)'; gg.fillRect(72, 223, 112, 6);
+    });
+    const belfry = tex(128, 128, (gg, w, h) => {
+      gg.fillStyle = '#efe6d2'; gg.fillRect(0, 0, w, h);
+      gg.fillStyle = '#d8ccb0'; gg.fillRect(0, 0, 10, h); gg.fillRect(w - 10, 0, 10, h);
+      gg.fillStyle = '#2a2622'; archP(30, 18, 68, 96, gg); gg.fill();
+      gg.fillStyle = '#d8ccb0'; gg.fillRect(24, 112, 80, 8);
+    });
+    const clock = tex(128, 128, (gg, w) => {
+      gg.fillStyle = '#efe6d2'; gg.fillRect(0, 0, w, w);
+      gg.fillStyle = '#1f2a33'; gg.beginPath(); gg.arc(64, 64, 46, 0, 7); gg.fill();
+      gg.strokeStyle = '#e2bf5a'; gg.lineWidth = 5; gg.beginPath(); gg.arc(64, 64, 46, 0, 7); gg.stroke();
+      gg.lineWidth = 6; gg.beginPath(); gg.moveTo(64, 64); gg.lineTo(64, 30); gg.moveTo(64, 64); gg.lineTo(88, 74); gg.stroke();
+    });
+    const wallM = this.mat({ map: baroque, color: '#ffffff' }), towerM = this.mat({ map: baroque, color: '#f4efe4' });
+    const belM = this.mat({ map: belfry }), clockM = this.mat({ map: clock }), plainM = this.mat({ color: '#eee5d1' });
+    const roofM = this.mat({ map: T.roof, color: '#b4553a', side: THREE.DoubleSide }), corn = this.mat({ color: '#ddd1b6' });
+    // Box mit Textur-Wiederholung nach Größe (Kachel in Metern)
+    const tbox = (w, h, d, m, x, y, z, tile = 8) => {
+      const geo = this.track(new THREE.BoxGeometry(w, h, d)), uv = geo.attributes.uv;
+      const dims = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+      for (let f = 0; f < 6; f++) for (let k = 0; k < 4; k++) { const i = f * 4 + k; uv.setXY(i, uv.getX(i) * dims[f][0] / tile, uv.getY(i) * dims[f][1] / tile); }
+      const o = new THREE.Mesh(geo, m); o.position.set(x, y + h / 2, z); g.add(o); return o;
+    };
+    // steiles Satteldach mit Überstand (Ziegeltextur)
+    const roof = (L, w, h, x, y, z, rotY = 0) => {
+      const a = L / 2 + 0.6, b = w / 2 + 0.9, geo = this.track(new THREE.BufferGeometry());
+      const v = [-a, 0, -b, a, 0, -b, a, h, 0, -a, 0, -b, a, h, 0, -a, h, 0, a, 0, b, -a, 0, b, -a, h, 0, a, 0, b, -a, h, 0, a, h, 0];
+      const sl = Math.hypot(b, h) / 3, ll = L / 3, uv = [0, 0, ll, 0, ll, sl, 0, 0, ll, sl, 0, sl, 0, 0, ll, 0, ll, sl, 0, 0, ll, sl, 0, sl];
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geo.computeVertexNormals();
+      const o = new THREE.Mesh(geo, roofM); o.position.set(x, y, z); o.rotation.y = rotY; g.add(o);
+      // Giebeldreiecke in Wandfarbe
+      const gg = this.track(new THREE.BufferGeometry());
+      gg.setAttribute('position', new THREE.Float32BufferAttribute([-L / 2, 0, -w / 2, -L / 2, 0, w / 2, -L / 2, h * (w / 2) / b, 0, L / 2, 0, w / 2, L / 2, 0, -w / 2, L / 2, h * (w / 2) / b, 0], 3)); gg.computeVertexNormals();
+      const gm = new THREE.Mesh(gg, plainM); gm.material.side = THREE.DoubleSide; gm.position.copy(o.position); gm.rotation.y = rotY; g.add(gm);
+    };
+    // Langhaus + Querhaus
+    tbox(98, 22, 26, wallM, 2, 0, 0); tbox(98.8, 1.2, 26.8, corn, 2, 22, 0, 4); roof(98, 26, 13, 2, 23.2, 0);
+    tbox(24, 22, 46, wallM, 12, 0, 0); tbox(24.8, 1.2, 46.8, corn, 12, 22, 0, 4); roof(46, 24, 12, 12, 23.2, 0, Math.PI / 2);
+    // Kuppel: Tambour mit Fenstern, Kupferkuppel, Laterne
+    const drum = new THREE.Mesh(this.track(new THREE.CylinderGeometry(8.6, 8.6, 9, 24, 1, true)), this.mat({ map: belfry, side: THREE.DoubleSide }));
+    drum.material.map = belfry.clone(); drum.material.map.needsUpdate = true; drum.material.map.repeat.set(8, 1); drum.position.set(12, 31.5, 0); g.add(drum);
+    cyl(g, 9.2, 9.2, 0.8, 24, corn, 12, 36, 0);
+    const cu = this.mat({ color: '#5f9e8a', envMapIntensity: 0.6, metalness: 0.35, roughness: 0.45 }, 'Standard');
+    dome(g, 8.8, cu, 12, 36.8, 0, 1.2); cyl(g, 1.8, 1.8, 4, 12, plainM, 12, 46.8, 0); dome(g, 2.0, cu, 12, 50.8, 0, 1.3);
+    cyl(g, 0.12, 0.12, 2.5, 6, this.mat({ color: '#e2bf5a' }), 12, 53, 0);
+    // Doppeltürme mit Glockenstube, Uhr und Zwiebelhaube
+    const helm = this.track(new THREE.LatheGeometry([[0, 0], [5.4, 0], [5.6, 0.8], [5.0, 2.2], [3.4, 3.8], [1.6, 5.0], [2.0, 6.0], [1.4, 7.2], [0.6, 8.2], [0.25, 10.5], [0, 11]].map(([x, y]) => new THREE.Vector2(x, y)), 16));
+    for (const zz of [-14, 14]) {
+      tbox(11.5, 40, 11.5, towerM, -46, 0, zz); tbox(12.3, 1.2, 12.3, corn, -46, 40, zz, 4);
+      tbox(10, 8, 10, belM, -46, 41.2, zz, 10); tbox(10.8, 0.9, 10.8, corn, -46, 49.2, zz, 4);
+      for (const [cx, cz] of [[-5.8, 0], [0, zz > 0 ? 5.8 : -5.8]]) { const ck = new THREE.Mesh(this.track(new THREE.CircleGeometry(2.1, 20)), clockM); ck.position.set(-46 + cx - (cx ? 0.02 : 0), 36, zz + cz + (cz ? Math.sign(cz) * 0.02 : 0)); ck.rotation.y = cx ? -Math.PI / 2 : (cz > 0 ? 0 : Math.PI); g.add(ck); }
+      const hm = new THREE.Mesh(helm, cu); hm.position.set(-46, 50.1, zz); g.add(hm);
+      cyl(g, 0.12, 0.12, 2.2, 6, this.mat({ color: '#e2bf5a' }), -46, 61, zz);
+    }
+    // geschwungene Mittelfassade mit Säulen, Portal und Volutengiebel
+    const front = new THREE.Mesh(this.track(new THREE.CylinderGeometry(9.5, 9.5, 30, 24, 1, false, Math.PI, Math.PI)), wallM);
+    front.material = this.mat({ map: baroque.clone(), color: '#ffffff' }); front.material.map.needsUpdate = true; front.material.map.repeat.set(3.6, 3.75);
+    front.position.set(-50.5, 15, 0); g.add(front);
+    for (const zz of [-6.8, -3.2, 3.2, 6.8]) { const a = Math.asin(zz / 9.5), cx = -50.5 - Math.cos(a) * 9.6; cyl(g, 0.55, 0.65, 21, 10, plainM, cx, 0, zz); cyl(g, 0.95, 0.95, 1, 10, corn, cx, 21, zz); }
+    const portal = new THREE.Mesh(this.track(new THREE.PlaneGeometry(4.2, 7)), this.mat({ color: '#5a3d29' })); portal.position.set(-60.05, 3.5, 0); portal.rotation.y = -Math.PI / 2; g.add(portal);
+    const ped = new THREE.Mesh(this.track(new THREE.CylinderGeometry(6.5, 6.5, 1.6, 20, 1, false, Math.PI, Math.PI)), corn); ped.rotation.x = Math.PI / 2; ped.position.set(-58.6, 30, 0); ped.scale.set(1, 1, 1); g.add(ped);
+    cyl(g, 0.15, 0.15, 3, 6, this.mat({ color: '#e2bf5a' }), -57.5, 34, 0);
+    // Treppe zum Portal
+    for (let k = 0; k < 3; k++) tbox(2.2, 0.35 * (3 - k), 14 - k * 2, this.mat({ color: '#d6cfc0' }), -61.5 - k * 1.6 + 1.6, -0.3, 0, 4);
   }
   convex(p) {
     const n = p.length / 2; let sign = 0;
@@ -912,6 +1018,12 @@ class Renderer3D {
       const rr = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r * 0.58, r * 0.58, w + 0.04, 10)), rim); rr.rotation.x = Math.PI / 2; wg.add(rr);
       const hub = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r * 0.2, r * 0.26, w + 0.12, 6)), metal); hub.rotation.x = Math.PI / 2; wg.add(hub);
       wheels.push({ g: wg, r, front: x > 0 });
+      // runder Kotflügel (Radlauf) über dem Rad
+      const R0 = r + 0.07, R1 = r + 0.24, sh = new THREE.Shape();
+      sh.absarc(0, 0, R1, 0.12, Math.PI - 0.12, false); sh.absarc(0, 0, R0, Math.PI - 0.12, 0.12, true);
+      const fg = this.track(new THREE.ExtrudeGeometry(sh, { depth: w + 0.1, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelOffset: -0.04, bevelSegments: 2, curveSegments: 14 }));
+      fg.translate(0, 0, -(w + 0.1) / 2);
+      const fe = new THREE.Mesh(fg, def.shape === 'buggy' ? dark : paint); fe.position.set(x, r, z * 0.985); fe.castShadow = true; body.add(fe);
       return wg;
     };
     const lightF = S({ color: '#fff6d8', emissive: '#d8c98a', roughness: 0.2 }), lightR = S({ color: '#ff3b30', emissive: '#a01a12', roughness: 0.2 });
@@ -924,8 +1036,6 @@ class Renderer3D {
       case 'sport': {   // flache Keilform mit schräger Frontscheibe
         for (const [x, z] of [[1.4, 1.02], [1.4, -1.02], [-1.35, 1.02], [-1.35, -1.02]]) wheel(0.44, 0.42, x, z);
         prof([[-hl, 0.38], [hl, 0.38], [hl, 0.62], [hl * 0.55, 0.8], [0.2, 0.86], [-hl * 0.75, 0.86], [-hl, 0.78]], Wd - 0.5, paint);
-        for (const s of [1, -1]) prof([[0.85, 0.5], [1.95, 0.5], [1.75, 0.82], [1.05, 0.86]], 0.36, dark, s * (Wd / 2 - 0.2));     // Kotflügel vorne
-        for (const s of [1, -1]) prof([[-1.95, 0.5], [-0.8, 0.5], [-1.0, 0.88], [-1.85, 0.86]], 0.38, dark, s * (Wd / 2 - 0.2));  // hinten
         prof([[0.65, 0.84], [-0.85, 0.84], [-1.05, 1.0], [-0.55, H], [0.05, H]], Wd * 0.72, glass);
         prof([[0.02, H - 0.02], [-0.55, H - 0.02], [-0.56, H + 0.04], [0.0, H + 0.04]], Wd * 0.74, paint);
         box(0.3, 0.12, Wd - 0.4, dark, -hl + 0.15, 1.02, 0);   // Heckflügel
@@ -939,7 +1049,6 @@ class Renderer3D {
         for (const [x, z] of [[-1.15, 1.15], [-1.15, -1.15]]) wheel(0.64, 0.62, x, z);
         prof([[-hl + 0.3, 0.42], [hl, 0.42], [hl, 0.62], [hl * 0.3, 0.9], [-hl + 0.3, 0.9]], 1.5, dark);
         prof([[0.2, 0.86], [hl, 0.62], [hl - 0.1, 0.8], [0.4, 1.05]], 1.65, paint);
-        for (const s of [1, -1]) prof([[0.75, 0.62], [1.85, 0.62], [1.7, 0.95], [0.95, 1.0]], 0.3, paint, s * 0.95);
         const cy = 1.75;
         for (const z of [-0.72, 0.72]) {
           tube(-0.85, 0.9, z, -0.6, cy, z * 0.9, 0.06, metal); tube(0.55, 0.9, z, 0.2, cy, z * 0.9, 0.06, metal);
@@ -969,7 +1078,6 @@ class Renderer3D {
         prof([[hl * 0.2, 1.0], [hl, 0.95], [hl - 0.05, 1.12], [hl * 0.2, 1.18]], Wd - 0.55, paint);   // Haube
         prof([[hl * 0.22, 1.08], [-0.75, 1.08], [-0.8, H - 0.08], [-0.05, H - 0.08]], Wd - 0.6, glass);
         prof([[-0.02, H - 0.1], [-0.82, H - 0.1], [-0.82, H], [-0.02, H]], Wd - 0.5, paint);
-        for (const s of [1, -1]) { prof([[0.95, 0.7], [2.1, 0.7], [2.0, 1.02], [1.05, 1.08]], 0.32, paint, s * (Wd / 2 - 0.12)); prof([[-2.0, 0.7], [-0.9, 0.7], [-1.0, 1.08], [-1.95, 1.06]], 0.32, paint, s * (Wd / 2 - 0.12)); }
         const sp = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.42, 0.42, 0.28, 16)), tire); sp.rotation.z = Math.PI / 2; sp.position.set(-hl - 0.12, 1.0, 0); body.add(sp);
         box(0.22, 0.3, Wd - 0.2, black, hl + 0.08, 0.62, 0);
         lamps(hl - 0.02, -hl + 0.02, 0.88, Wd / 2 - 0.45);
@@ -984,8 +1092,6 @@ class Renderer3D {
         prof([[0.53, H - 0.1], [-0.42, H - 0.1], [-0.42, H], [0.5, H]], Wd - 0.5, paint);
         for (const s of [1, -1]) box(hl - 0.5, 0.35, 0.12, paint, -hl / 2 - 0.2, 1.62, s * (Wd / 2 - 0.3));   // Ladeflächen-Bordwand
         box(0.12, 0.35, Wd - 0.6, paint, -hl + 0.08, 1.62, 0);
-        for (const s of [1, -1]) prof([[0.8, 1.05], [2.3, 1.05], [2.15, 1.45], [0.95, 1.5]], 0.4, paint, s * (Wd / 2 - 0.08));
-        for (const s of [1, -1]) prof([[-2.3, 1.05], [-0.8, 1.05], [-0.95, 1.5], [-2.15, 1.45]], 0.4, paint, s * (Wd / 2 - 0.08));
         for (const z of [-0.5, 0, 0.5]) box(0.15, 0.15, 0.15, this.mat({ color: '#ffe9a0', emissive: '#aa9a40' }), 0.4, H + 0.08, z);
         box(0.25, 0.32, Wd - 0.1, black, hl + 0.1, 1.05, 0);
         lamps(hl - 0.02, -hl + 0.02, 1.3, Wd / 2 - 0.5);
@@ -1004,14 +1110,27 @@ class Renderer3D {
     // Turm
     const turret = new THREE.Group(); turret.position.set(c.shape.turret, H + 0.05, 0); turret.rotation.order = 'YZX'; root.add(turret);
     const ringM = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.62, 0.72, 0.22, 16)), metal); ringM.position.y = 0.06; ringM.castShadow = true; turret.add(ringM);
-    const tb = (w, h, d, m, x, y, z) => { const o = new THREE.Mesh(this.track(new THREE.BoxGeometry(w, h, d)), m); o.position.set(x, y, z); o.castShadow = true; turret.add(o); return o; };
+    const tb = (w, h, d, m, x, y, z) => { const o = new THREE.Mesh(this.track(roundBox(w, h, d, Math.min(0.18, w * 0.3, h * 0.35, d * 0.3))), m); o.position.set(x, y, z); o.castShadow = true; turret.add(o); return o; };
+    const dome = (r, sy, m, x, y) => { const o = new THREE.Mesh(this.track(new THREE.SphereGeometry(r, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2)), m); o.scale.y = sy; o.position.set(x, y, 0); o.castShadow = true; turret.add(o); return o; };
+    const muzzle = (r, x, y, z) => { const o = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r * 1.35, r * 1.35, 0.18, 10)), metal); o.rotation.z = Math.PI / 2; o.position.set(x, y, z); turret.add(o); };
     const barrel = (r, l, m, x, y, z) => { const o = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r, r, l, 8)), m); o.rotation.z = Math.PI / 2; o.position.set(x + l / 2, y, z); o.castShadow = true; turret.add(o); return o; };
     switch (def.weapon) {
-      case 'mg': tb(0.9, 0.35, 0.9, metal, 0, 0.15, 0); barrel(0.08, 1.8, black, 0.2, 0.2, 0.2); barrel(0.08, 1.8, black, 0.2, 0.2, -0.2); break;
-      case 'minigun': tb(0.9, 0.5, 0.9, metal, 0, 0.25, 0); for (const [y, z] of [[0.3, 0.12], [0.3, -0.12], [0.45, 0], [0.15, 0]]) barrel(0.06, 1.8, black, 0.3, y, z); break;
-      case 'cannon': tb(2, 0.7, 1.7, metal, 0, 0.35, 0); barrel(0.2, 2.8, black, 0.8, 0.4, 0); tb(0.4, 0.15, 0.4, paint, -0.3, 0.75, 0); break;
-      case 'rocket': tb(1.4, 0.9, 1.4, metal, 0, 0.45, 0); for (const [y, z] of [[0.3, 0.3], [0.3, -0.3], [0.65, 0.3], [0.65, -0.3]]) barrel(0.14, 0.5, this.mat({ color: '#ff7b39' }), 0.55, y, z); break;
-      case 'shotgun': tb(1, 0.5, 1, metal, 0, 0.25, 0); barrel(0.22, 1.5, black, 0.2, 0.3, 0); break;
+      case 'mg': dome(0.5, 0.7, dark, 0, 0.12); barrel(0.07, 1.7, metal, 0.25, 0.28, 0.17); barrel(0.07, 1.7, metal, 0.25, 0.28, -0.17); muzzle(0.07, 1.95, 0.28, 0.17); muzzle(0.07, 1.95, 0.28, -0.17); break;
+      case 'minigun': dome(0.52, 0.75, dark, 0, 0.12); { const drum = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.2, 0.2, 0.5, 12)), metal); drum.rotation.z = Math.PI / 2; drum.position.set(0.55, 0.32, 0); turret.add(drum); }
+        for (let k = 0; k < 6; k++) barrel(0.045, 1.5, black, 0.6, 0.32 + Math.sin(k * 1.047) * 0.12, Math.cos(k * 1.047) * 0.12); break;
+      case 'cannon': {
+        const sh = new THREE.Shape([[-1.0, 0], [0.75, 0], [1.05, 0.25], [0.7, 0.62], [-0.85, 0.62], [-1.05, 0.35]].map(([a, b]) => new THREE.Vector2(a, b)));
+        const g = this.track(new THREE.ExtrudeGeometry(sh, { depth: 1.3, bevelEnabled: true, bevelThickness: 0.12, bevelSize: 0.12, bevelOffset: -0.12, bevelSegments: 3 })); g.translate(0, 0, -0.65);
+        const o = new THREE.Mesh(g, dark); o.position.y = 0.1; o.castShadow = true; turret.add(o);
+        barrel(0.17, 2.6, metal, 0.9, 0.42, 0); muzzle(0.17, 3.45, 0.42, 0); dome(0.25, 0.6, paint, -0.35, 0.72); break;
+      }
+      case 'rocket': {
+        tb(1.15, 0.6, 1.3, dark, 0.05, 0.45, 0);
+        const orange = this.mat({ color: '#ff7b39', emissive: '#7a2a08', roughness: 0.4 }, 'Standard');
+        for (const [y, z] of [[0.33, 0.3], [0.33, -0.3], [0.58, 0.3], [0.58, -0.3]]) { barrel(0.12, 0.35, metal, 0.5, y, z); const tip = new THREE.Mesh(this.track(new THREE.SphereGeometry(0.1, 8, 6)), orange); tip.position.set(0.88, y, z); turret.add(tip); }
+        break;
+      }
+      case 'shotgun': dome(0.55, 0.7, dark, 0, 0.12); barrel(0.2, 1.4, metal, 0.25, 0.32, 0); muzzle(0.2, 1.6, 0.32, 0); break;
     }
     // Geister-Umriss für den Spieler (sichtbar durch Häuser)
     if (c.isPlayer) {
@@ -1052,8 +1171,8 @@ class Renderer3D {
     const G = this.game, cam = this.camera;
     if (G.camMode === 'chase') {
       // Drohne: knapp hinter und über dem Auto, steigt über Häuser im Weg
-      const yaw = G.camYaw, fx = Math.cos(yaw), fy = Math.sin(yaw);
-      const back = 12.5 / G.zoomMul, up = 5.2 / G.zoomMul;
+      const yaw = G.viewYaw ?? G.camYaw, fx = Math.cos(yaw), fy = Math.sin(yaw), lp = G.lookPitch || 0;
+      const back = 12.5 / G.zoomMul, up = Math.max(1.6, (5.2 - lp * 4) / G.zoomMul);
       const Wd = G.world;
       let need = cz + up;
       // im Tunnel / unter einer Brücke: unter der Decke bleiben und näher ran
@@ -1063,7 +1182,7 @@ class Renderer3D {
       for (let s = 0.2; s <= 1.001; s += 0.2) {
         const sx2 = cx - fx * bk * s, sy2 = cy - fy * bk * s;
         const b = Wd.buildingAt(sx2, sy2);
-        if (b) need = Math.max(need, b.top + (b.flat ? 2.5 : 6));
+        if (b) need = Math.max(need, b.top + (b.rf ? b.rf.rise + 1.8 : 2.5));
         const tnS = Wd.tunnelAt(sx2, sy2);
         if (!(inTun && tnS)) need = Math.max(need, Wd.terrain(sx2, sy2) + 2.5);
       }
@@ -1071,7 +1190,7 @@ class Renderer3D {
       else if (under !== null) need = Math.min(need, under - 0.6);
       this.camH = this.camH == null ? need : this.camH + (need - this.camH) * Math.min(1, (dt || 0.016) * (need > this.camH ? 6 : 2.5));
       cam.position.set(cx - fx * bk, this.camH, cy - fy * bk);
-      cam.lookAt(cx + fx * 10, cz + 1.4, cy + fy * 10);
+      cam.lookAt(cx + fx * 10, cz + 1.4 + lp * 12, cy + fy * 10);
       if (cam.fov !== 68) { cam.fov = 68; cam.updateProjectionMatrix(); this.updatePointScale(); }
       cam.updateMatrixWorld();
       const ax = cx + fx * 45, ay = cy + fy * 45;
@@ -1138,6 +1257,32 @@ class Renderer3D {
     return { x: o.x + d.x * t, y: o.z + d.z * t, z: o.y + d.y * t, kind: 'sky' };
   }
 
+  // Auto wurde ersetzt (Nachjoinen / Bot übernimmt): altes Modell entfernen
+  removeCar(c) {
+    const m = this.cars.get(c);
+    if (m) { this.scene.remove(m.root); this.cars.delete(c); }
+  }
+  // Zielhilfe: Gegner nahe am Fadenkreuz-Strahl (Winkel), in Reichweite und mit freier Schusslinie
+  aimAssist(sx, sy, c, range, cone = 0.11) {
+    const ndc = new THREE.Vector2(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1);
+    this.ray.setFromCamera(ndc, this.camera);
+    const o = this.ray.ray.origin, d = this.ray.ray.direction, W = this.game.world;
+    let best = null, bestA = cone;
+    for (const q of this.game.cars) {
+      if (!q.alive || q === c || q.team === c.team || q.protect > 0) continue;
+      const hd = Math.hypot(q.x - c.x, q.y - c.y);
+      if (hd > range) continue;
+      const vx = q.x - o.x, vy = q.z + 0.9 - o.y, vz = q.y - o.z, l = Math.hypot(vx, vy, vz) || 1;
+      const ang = Math.acos(Math.max(-1, Math.min(1, (vx * d.x + vy * d.y + vz * d.z) / l)));
+      if (ang >= bestA) continue;
+      // freie Schusslinie vom Turm zum Ziel (keine Hilfe durch Wände)
+      let free = true; const n = Math.ceil(hd / 3), z0 = c.z + 1.1, z1 = q.z + 0.9;
+      for (let k = 1; k < n && free; k++) { const t = k / n; if (W.solidAt(c.x + (q.x - c.x) * t, c.y + (q.y - c.y) * t, z0 + (z1 - z0) * t)) free = false; }
+      if (free) { best = q; bestA = ang; }
+    }
+    return best;
+  }
+
   // ---------------- Bild zeichnen ----------------
   render(dt, time) {
     const G = this.game;
@@ -1182,7 +1327,7 @@ class Renderer3D {
       const vfw = c.vx * ca + c.vy * sa;
       for (const w of m.wheels) { w.g.rotation.z -= vfw * dt / w.r; if (w.front) w.g.rotation.y = (c.steerS || 0) * 0.45; }
       // Gesicht immer „aufrecht“ zur Kamera
-      m.face.rotation.y = c.a - Math.PI / 2 - (G.camMode === 'chase' ? G.camYaw : -Math.PI / 2);
+      m.face.rotation.y = c.a - Math.PI / 2 - (G.camMode === 'chase' ? (G.viewYaw ?? G.camYaw) : -Math.PI / 2);
       const flash = c.flashT > 0;
       if (flash !== m.flashOn) { m.paint.emissive.set(flash ? '#ffffff' : '#000000'); m.flashOn = flash; }
       if (c.flag !== m.lastFlag) {

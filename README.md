@@ -39,6 +39,11 @@ Hinweise:
 - **Dächer-Hüpfen:** höhere Sprünge; Sprung + Nitro steigt bis gut 20 m und trägt über Häuser. Auf Satteldächern landet man auf den Ziegeln.
 - **Nitro laden:** schneller als vorher, Bonus beim Driften (`Q`), in der Luft und für jeden sauberen Salto.
 - **Minikarte (unten rechts):** großer Ausschnitt um dich, helle Straßen, dunkle Häuser, Basen R/B, Flaggen (getragene Flagge mit pulsierendem Ring), Pfeile für dich, Team und Gegner in der Nähe.
+- **Kamera & Zielen:** Kamera hängt hinter dem Auto, Fadenkreuz fest in der Bildmitte über dem Dach. Klick ins Spiel fängt die Maus ein: Maus-Blick nach links/rechts/oben/unten, der nach ~1,5 s beim Fahren wieder hinter das Auto schwenkt (Esc gibt die Maus frei). Leichte Zielhilfe: Gegner bis ~6° neben dem Fadenkreuz (mit freier Schusslinie) werden anvisiert, mit Vorhalt.
+- **Doppelsprung (Rocket-League-Stil):** in der Luft Leertaste erneut drücken – sofort, ohne Abklingzeit; mit W/A/S/D als Ausweichsprung (Stoß + Salto in die Richtung). Wird bei der Landung zurückgesetzt.
+- **Online nachjoinen:** wer während eines Matches mit dem Code beitritt, ersetzt einen Bot im Team mit weniger echten Spielern. Wer rausfliegt, wird zum Bot; joint er wieder (gleicher Name), bekommt er sein altes Auto samt Punkten zurück.
+- **Verbindung:** jede Verbindung läuft sofort über den Supabase-Server und schaltet automatisch auf direkt (WebRTC) um, sobald das klappt – und zurück, wenn die direkte Leitung stumm wird. Über den Server wird der Spielstand einmal für alle gesendet, die Rate passt sich der Spielerzahl an.
+- **Basilika-Vorplatz:** Team Rot startet auf der gepflasterten Terrasse vor der Basilika (Stützmauern, zwei breite Rampen hinunter in die Stadt). Im Tal stehen jetzt Häuser mit roten Satteldächern statt leerer Wiesen.
 - **Sprünge:** nur noch ~0,5 s Abklingzeit, dazu ein Doppelsprung in der Luft (Leertaste erneut drücken).
 - **Zielen in 3D:** Turm und Geschosse folgen dem Fadenkreuz auch nach oben und unten (Ziele auf Dächern, in der Luft, unter Brücken); das Fadenkreuz wird rot, wenn ein Gegner darunter ist, und zeigt den Höhenwinkel an.
 - **Saltos:** in der Luft `W`/`S` + `Shift` → Vorwärts-/Rückwärtssalto (360°). Kurz vor dem Boden richtet sich das Auto leicht auf; saubere Landung = +25 XP pro Salto, schiefe Landung bremst und kostet etwas Panzerung.

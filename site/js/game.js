@@ -34,7 +34,7 @@ const PROP = [
 
 // ---------------- Eingabe ----------------
 const Input = {
-  keys: {}, mouse: { x: 0, y: 0, down: false, right: false, moved: false },
+  keys: {}, mouse: { x: 0, y: 0, down: false, right: false, moved: false, dx: 0, dy: 0 },
   touch: { active: false, move: null, aim: null, jump: false, boost: false, mine: false, drift: false },
   init(canvas) {
     addEventListener('keydown', e => {
@@ -44,8 +44,15 @@ const Input = {
     });
     addEventListener('keyup', e => { this.keys[e.code] = false; });
     addEventListener('blur', () => { this.keys = {}; this.mouse.down = false; });
-    canvas.addEventListener('mousemove', e => { this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.moved = true; });
-    canvas.addEventListener('mousedown', e => { if (e.button === 0) this.mouse.down = true; if (e.button === 2) this.mouse.right = true; Sound.init(); });
+    canvas.addEventListener('mousemove', e => {
+      if (document.pointerLockElement === canvas) { this.mouse.dx += e.movementX || 0; this.mouse.dy += e.movementY || 0; return; }
+      this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.moved = true;
+    });
+    canvas.addEventListener('mousedown', e => {
+      if (e.button === 0) this.mouse.down = true; if (e.button === 2) this.mouse.right = true; Sound.init();
+      // Drohnen-Kamera: Klick fängt die Maus ein (Mausblick); Esc gibt sie frei
+      if (Input.wantLock && Input.wantLock() && document.pointerLockElement !== canvas && canvas.requestPointerLock) { try { canvas.requestPointerLock(); } catch (er) { /* egal */ } }
+    });
     addEventListener('mouseup', e => { if (e.button === 0) this.mouse.down = false; if (e.button === 2) this.mouse.right = false; });
     canvas.addEventListener('contextmenu', e => e.preventDefault());
     canvas.addEventListener('wheel', e => { if (Input.onWheel) Input.onWheel(Math.sign(e.deltaY)); e.preventDefault(); }, { passive: false });
@@ -222,17 +229,8 @@ class Game {
     this.events = []; this.rtt = 0.1;
     const roster = opts.roster || Game.buildRoster({ ...opts, bots: true }, [{ key: 'local', name: this.demo ? null : (opts.name || 'Spieler'), driver: opts.driver, car: opts.car, upgrades: opts.upgrades || {}, team: 0, human: !this.demo }]);
     const me = opts.me || 'local';
-    this.cars = [];
-    for (const r of roster) {
-      const def = CARS.find(c => c.id === r.car) || CARS[0];
-      const c = new Car(this, def, r.upgrades || {}, driverById(r.driver), r.team, r.key === me && !this.demo);
-      c.id = r.id; c.key = r.key; c.human = !!r.human;
-      c.name = (r.name || c.driver.name || 'Bot').slice(0, 18);
-      if (c.human || this.isClient) c.bot = null;
-      else if (c.bot) c.bot.role = r.role || 'attack';
-      c.remote = this.isHost && c.human && r.key !== me;
-      this.cars.push(c);
-    }
+    this.me = me;
+    this.cars = roster.map(r => this.carFromRoster(r));
     this.byId = new Map(this.cars.map(c => [c.id, c]));
     this.player = this.cars.find(c => c.key === me) || this.cars[0];
     this.cam.x = this.player.x; this.cam.y = this.player.y;
@@ -245,6 +243,8 @@ class Game {
     if (!this.r3d && c3) c3.style.display = 'none';
     // Kamera: 'chase' = Drohne hinter dem Auto, 'top' = von oben
     this.camMode = this.r3d ? (opts.camMode || 'chase') : 'top';
+    this.lookYaw = 0; this.lookPitch = 0;
+    Input.wantLock = () => !this.demo && this.running && this.camMode === 'chase' && !this.paused && this.state !== 'over' && !Input.touch.active;
     this.camYaw = this.player.a;
     this.viewRect = { x0: 0, y0: 0, x1: 1, y1: 1 };
     this.resize();
@@ -257,6 +257,53 @@ class Game {
     requestAnimationFrame(this.frame);
   }
   // Kader: Menschen + Bots, die die Teams auffüllen
+  carFromRoster(r) {
+    const me = this.me;
+    const def = CARS.find(c => c.id === r.car) || CARS[0];
+    const c = new Car(this, def, r.upgrades || {}, driverById(r.driver), r.team, r.key === me && !this.demo);
+    c.id = r.id; c.key = r.key; c.human = !!r.human;
+    c.name = (r.name || c.driver.name || 'Bot').slice(0, 18);
+    if (c.human || this.isClient) c.bot = null;
+    else if (c.bot) c.bot.role = r.role || 'attack';
+    c.remote = this.isHost && c.human && r.key !== me;
+    return c;
+  }
+  rosterEntry(c) { return { id: c.id, key: c.key, name: c.name, driver: c.driver.id || '', car: c.def.id, upgrades: c.lv, team: c.team, human: !!c.human, role: c.bot ? c.bot.role : 'attack' }; }
+  // Auto im laufenden Spiel ersetzen oder hinzufügen (Nachjoinen)
+  putCar(r) {
+    const old = this.byId.get(r.id);
+    if (old) {
+      if (old.flag >= 0 && this.isHost) this.dropFlag(old);
+      if (this.r3d) this.r3d.removeCar(old);
+    }
+    const c = this.carFromRoster(r);
+    const i = this.cars.indexOf(old);
+    if (i >= 0) this.cars[i] = c; else this.cars.push(c);
+    this.byId.set(c.id, c);
+    for (const f of this.flags) if (f.carrier === old) f.carrier = null;
+    return c;
+  }
+  // Host: Spieler kommt mitten ins Match -> ins Team mit weniger echten Spielern, ersetzt dort einen Bot
+  lateJoin(info) {
+    const humans = [0, 1].map(t => this.cars.filter(c => c.human && c.team === t).length);
+    const sizes = [0, 1].map(t => this.cars.filter(c => c.team === t).length);
+    let team = humans[0] !== humans[1] ? (humans[0] < humans[1] ? 0 : 1) : sizes[0] !== sizes[1] ? (sizes[0] < sizes[1] ? 0 : 1) : (this.score[0] <= this.score[1] ? 0 : 1);
+    const pickBot = t => this.cars.filter(c => !c.human && c.team === t).sort((a, b) => (a.flag >= 0) - (b.flag >= 0) || (b.alive ? 0 : 1) - (a.alive ? 0 : 1))[0];
+    let bot = pickBot(team);
+    if (!bot && pickBot(1 - team) && humans[1 - team] < humans[team]) { team = 1 - team; bot = pickBot(team); }
+    // Rückkehrer bekommt sein altes Auto (Team, Punkte, XP) zurück
+    const own = this.cars.find(c => !c.human && c.wasName && c.wasName === info.name);
+    if (own) { bot = own; team = own.team; }
+    const id = bot ? bot.id : Math.max(...this.cars.map(c => c.id)) + 1;
+    const r = { id, key: info.key, name: info.name, driver: info.driver, car: info.car, upgrades: info.upgrades || {}, team, human: true };
+    const keep = own ? { kills: own.kills, deaths: own.deaths, caps: own.caps, returns: own.returns, assists: own.assists, score: own.score, xp: own.xp, pts: own.pts, earned: own.earned } : null;
+    const c = this.putCar(r);
+    if (keep) { Object.assign(c, keep); if (own.car === undefined && own.def.id === c.def.id) { c.ups = { ...own.ups }; if (c.recalc) c.recalc(); } }
+    c.protect = 3;
+    this.events.push(['rj', r]);
+    this.log({ text: bot ? 'ist beigetreten (ersetzt ' + bot.name + ')' : 'ist beigetreten', a: c, flagTeam: team });
+    return this.cars.map(o => this.rosterEntry(o));
+  }
   static buildRoster(opts, humans) {
     const roster = [];
     let id = 1;
@@ -280,6 +327,7 @@ class Game {
   }
   destroy() {
     this.running = false;
+    if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
     if (this.r3d) { this.r3d.dispose(); this.r3d = null; }
     removeEventListener('resize', this._onResize);
     Sound.engineStop();
@@ -458,7 +506,17 @@ class Game {
         const vF = p.vx * Math.cos(p.a) + p.vy * Math.sin(p.a);
         if (vF > -3) this.camYaw += angNorm(p.a - this.camYaw) * (1 - Math.exp(-dt * 3.2));
         this.cam.x = p.x; this.cam.y = p.y;
+        if (!this.demo) {
+          const M = Input.mouse;
+          if (M.dx || M.dy) {
+            this.lookYaw = clamp((this.lookYaw || 0) + M.dx * 0.0032, -2.6, 2.6);
+            this.lookPitch = clamp((this.lookPitch || 0) - M.dy * 0.0024, -0.35, 0.65);
+            this.lookIdle = 0; M.dx = 0; M.dy = 0;
+          } else this.lookIdle = (this.lookIdle || 0) + dt;
+          if (this.lookIdle > 1.4 && p.speed > 6) { const k = Math.exp(-dt * 2.2); this.lookYaw *= k; this.lookPitch *= k; }
+        }
       }
+      this.viewYaw = this.camYaw + (this.lookYaw || 0);
       if (this.demo) return;
       if (this.player.alive) Sound.engineUpdate(clamp(p.speed / p.st.speed, 0, 1.3), p.boosting, this.state !== 'over');
       else Sound.engineUpdate(0, false, false);
@@ -518,7 +576,23 @@ class Game {
     inp.drift = !!(K.KeyQ || K.KeyX);
     inp.fire = Input.mouse.down || !!K.KeyF || !!K.Enter;
     inp.pitch = 0;
-    if (Input.mouse.moved && this.r3d) {
+    if (this.r3d && this.camMode === 'chase') {
+      const cr = this.crosshair();
+      const ap = this.r3d.aimPoint(cr.x, cr.y, c);
+      inp.aim = Math.atan2(ap.y - c.y, ap.x - c.x);
+      const dz = ap.z - (c.z + 1.1), hd = Math.max(1, Math.hypot(ap.x - c.x, ap.y - c.y));
+      inp.pitch = ap.kind === 'ground' && Math.abs(dz) < 2.5 ? 0 : clamp(Math.atan2(dz, hd), -0.6, 0.9);
+      this.aimLock = ap.car || null;
+      // leichte Zielhilfe: Gegner nahe am Fadenkreuz wird anvisiert, mit Vorhalt für fahrende Ziele
+      const t = this.r3d.aimAssist(cr.x, cr.y, c, c.range * 0.95, this.opts.autoAim ? 0.2 : 0.11) || (ap.car && ap.car.alive ? ap.car : null);
+      if (t) {
+        const dist = Math.hypot(t.x - c.x, t.y - c.y), tt = dist / c.w.speed;
+        inp.aim = Math.atan2(t.y + t.vy * tt * 0.85 - c.y, t.x + t.vx * tt * 0.85 - c.x);
+        const tz = (t.z + 0.9 + (t.onGround === false ? (t.vz || 0) * tt * 0.5 : 0)) - (c.z + 1.1);
+        inp.pitch = Math.abs(tz) > 1.6 ? clamp(Math.atan2(tz, Math.max(1, dist)), -0.6, 0.9) : 0;
+        this.aimLock = t;
+      }
+    } else if (Input.mouse.moved && this.r3d) {
       // Strahl durch das Fadenkreuz: trifft Auto, Hauswand, Boden oder Himmel -> Seiten- und Höhenwinkel
       const ap = this.r3d.aimPoint(Input.mouse.x, Input.mouse.y, c);
       inp.aim = Math.atan2(ap.y - c.y, ap.x - c.x);
@@ -531,6 +605,8 @@ class Game {
     } else inp.aim = c.a;
     if (this.opts.autoAim) this.autoAim(c, true);
   }
+  // Fadenkreuz der Drohnen-Ansicht (CSS-Pixel): Bildmitte, etwas über dem Autodach
+  crosshair() { return { x: innerWidth / 2, y: innerHeight * 0.4 }; }
   autoAim(c, alsoFire) {
     const t = this.findTarget(c, c.range * 0.95);
     if (t) {
@@ -582,7 +658,7 @@ class Game {
     }
     c.onGround = onGround;
     if (!onGround) c.airT += dt;
-    else if (c.pitch) { c.pitch = 0; c.pitchV = 0; c.flipAcc = 0; }
+    else if (c.pitch || c.dodgeT) { c.pitch = 0; c.pitchV = 0; c.flipAcc = 0; c.dodgeT = 0; }
     // Hangabtrieb: bergauf langsamer, bergab schneller
     if (onGround) { c.vx -= GRAV * 0.6 * sx * dt; c.vy -= GRAV * 0.6 * sy * dt; }
     const fx = Math.cos(c.a), fy = Math.sin(c.a);
@@ -636,8 +712,15 @@ class Game {
     } else {
       c.drifting = false;
       // Doppelsprung: Taste in der Luft erneut drücken
-      if (playing && inp.jump && !c.jumpHeld && c.airJumps > 0 && c.jumpCd <= 0) {
-        c.airJumps--; c.vz = Math.max(c.vz, 0) + st.jump * 0.8; c.jumpCd = st.jumpCd;
+      if (playing && inp.jump && !c.jumpHeld && c.airJumps > 0 && c.airT > 0.06) {
+        c.airJumps--; c.jumpHeld = true;
+        const dThr = inp.thr || 0, dSt = inp.steer || 0;
+        if (dThr || dSt) {
+          // Ausweichsprung: kräftiger Stoß in Richtung (vorne/hinten/seitlich), Vorwärts-/Rückwärtssalto
+          const l = Math.hypot(dThr, dSt);
+          vF += dThr / l * 11; vL += dSt / l * 11; c.vz = Math.max(c.vz, 0) * 0.4 + st.jump * 0.6;
+          if (dThr) { c.dodgeT = 0.55; c.dodgeDir = Math.sign(dThr); }
+        } else c.vz = Math.max(c.vz, 0) + st.jump * 0.9;
         Sound.play('jump', this.vol(c.x, c.y));
         for (let i = 0; i < 8; i++) this.particles.add({ x: c.x, y: c.y, zAbs: c.z + 0.3, vz: -3, vx: rand(-5, 5), vy: rand(-5, 5), life: 0.4, max: 0.4, size: 0.6, grow: 2, color: '#bfe8ff', alpha: 0.6, add: true });
       }
@@ -646,9 +729,10 @@ class Game {
       const up = Math.round((c.pitch || 0) / (Math.PI * 2)) * Math.PI * 2;
       let wantV;
       const pt = c.bot ? 0 : thr;   // Bots fliegen gerade
-      if (c.boosting && pt !== 0 && !nearGround) wantV = -pt * 7.2;
+      if (c.dodgeT > 0) { c.dodgeT -= dt; wantV = -c.dodgeDir * 11.4; if (c.dodgeT <= 0) { c.pitch = angNorm(c.pitch); c.flipAcc = 0; } }
+      else if (c.boosting && pt !== 0 && !nearGround) wantV = -pt * 7.2;
       else { const tgt = (nearGround ? up : up - pt * 0.35); wantV = clamp((tgt - (c.pitch || 0)) * (nearGround ? 6 : 4), -5.5, 5.5); }
-      c.pitchV = (c.pitchV || 0) + (wantV - (c.pitchV || 0)) * Math.min(1, dt * 7);
+      c.pitchV = c.dodgeT > 0 ? wantV : (c.pitchV || 0) + (wantV - (c.pitchV || 0)) * Math.min(1, dt * 7);
       c.pitch = (c.pitch || 0) + c.pitchV * dt;
       c.flipAcc = (c.flipAcc || 0) + c.pitchV * dt;
       c.a += steer * st.turn * (c.boosting ? 0.75 : 0.35) * dt;
@@ -772,6 +856,7 @@ class Game {
   }
   // Landung nach Sprung: Saltos zählen, schiefe Landung bremst und kostet etwas Panzerung
   landFlip(c) {
+    if (c.dodgeT > 0) { c.dodgeT = 0; c.pitch = 0; c.pitchV = 0; c.flipAcc = 0; return; }   // Ausweichsprung landet immer sauber
     const off = angNorm(c.pitch || 0), flips = Math.floor((Math.abs(c.flipAcc || 0) + 0.6) / (Math.PI * 2));
     if (Math.abs(off) > 1.0) {
       c.vx *= 0.35; c.vy *= 0.35;
@@ -1257,7 +1342,8 @@ class Game {
   dropHuman(key) {
     const c = this.cars.find(o => o.key === key);
     if (!c || !c.human) return;
-    c.human = false; c.bot = newBotState('attack');
+    c.human = false; c.remote = false; c.bot = newBotState('attack'); c.key = 'bot' + c.id; c.rs = null; c.wasName = c.name;
+    this.events.push(['rj', this.rosterEntry(c)]);
     this.log({ text: 'hat das Spiel verlassen (Bot übernimmt)', a: c, flagTeam: c.team });
   }
 
@@ -1379,6 +1465,7 @@ class Game {
           break;
         }
         case 'b': this.boom(e[1], e[2], e[3], !!e[4]); break;
+        case 'rj': { const r = e[1]; if (r && typeof r === 'object' && r.key !== this.me) this.putCar(r); break; }
         case 'l': {
           const d = e[1];
           this.log({ kind: d.kind, text: d.text, flagTeam: d.flagTeam, cap: d.cap, fx: d.fx, a: d.a ? this.byId.get(d.a) : null, b: d.b ? this.byId.get(d.b) : null });
@@ -1906,7 +1993,7 @@ class Game {
     g.drawImage(mini, X(0), Y(0), W.w * k, W.h * k);
     // Blickrichtung der Kamera
     if (p && p.alive && this.camMode === 'chase') {
-      const a = this.camYaw, r = 70 * D;
+      const a = this.viewYaw ?? this.camYaw, r = 70 * D;
       const gr = g.createRadialGradient(X(p.x), Y(p.y), 0, X(p.x), Y(p.y), r);
       gr.addColorStop(0, 'rgba(255,255,255,0.28)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
       g.fillStyle = gr; g.beginPath(); g.moveTo(X(p.x), Y(p.y)); g.arc(X(p.x), Y(p.y), r, a - 0.55, a + 0.55); g.closePath(); g.fill();
@@ -2061,8 +2148,19 @@ class Game {
       if (!touch) { g.fillStyle = p.drifting ? '#ffe66d' : '#888'; g.fillText('↯ Drift [Q]', px + 64 * D, py + 58 * D); }
     }
     // Fadenkreuz + Treffermarker
-    if (!touch && Input.mouse.moved && p.alive) {
-      const mx = Input.mouse.x * this.dpr, my = Input.mouse.y * this.dpr;
+    const chase3d = this.r3d && this.camMode === 'chase';
+    if (!touch && (chase3d || Input.mouse.moved) && p.alive) {
+      const cr = chase3d ? this.crosshair() : Input.mouse;
+      const mx = cr.x * this.dpr, my = cr.y * this.dpr;
+      if (chase3d) {
+        g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 4 * D; g.beginPath();
+        for (const [ax, ay] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { g.moveTo(mx + ax * 15 * D, my + ay * 15 * D); g.lineTo(mx + ax * 24 * D, my + ay * 24 * D); }
+        g.stroke(); g.strokeStyle = '#fff'; g.lineWidth = 2 * D; g.stroke();
+        if (document.pointerLockElement !== this.canvas && this.state !== 'over') {
+          g.fillStyle = 'rgba(255,255,255,0.75)'; g.font = `700 ${Math.round(11 * D)}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'top';
+          g.fillText('Klicken = Maus-Blick (Esc gibt die Maus frei)', mx, my + 30 * D);
+        }
+      }
       const lock = this.aimLock && this.aimLock.alive;
       g.strokeStyle = lock ? '#ff5a4a' : 'rgba(255,255,255,0.9)'; g.lineWidth = 2 * D;
       g.beginPath(); g.arc(mx, my, (lock ? 14 : 11) * D, 0, 7); g.stroke();

@@ -309,6 +309,7 @@ $('#opt-3d').onchange = e => { save.settings.gfx3d = e.target.checked; writeSave
 
 function togglePause(v) {
   if (!game || game.state === 'over') return;
+  if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
   const el = $('#scr-pause');
   if (game.mode !== 'local') {
     // online wird nicht angehalten – nur das Menü einblenden
@@ -407,6 +408,7 @@ Net.onEvents = ev => { if (game && game.isClient && Array.isArray(ev)) game.appl
 Net.onPong = ts => { if (game && game.isClient) game.onPong(ts); };
 Net.onInput = (pid, d) => { if (game && game.isHost) game.remoteInput(pid, d); };
 Net.onDrop = pid => { if (game && game.isHost) game.dropHuman(pid); };
+Net.onLateJoin = info => (game && game.isHost && game.state !== 'over') ? game.lateJoin(info) : null;
 Net.onToLobby = () => {
   if (game) { game.destroy(); game = null; }
   $('#scr-end').classList.add('hidden'); $('#scr-pause').classList.add('hidden');
@@ -467,5 +469,5 @@ loadAdminAssets().finally(() => loadDriverImages(() => {
     $('#join-code').value = code.toUpperCase().slice(0, 5);
     history.replaceState(null, '', location.pathname);
     doJoin();
-  } else show('menu');
+  } else if (!(game && !game.demo)) show('menu');   // läuft schon ein Spiel, Menü nicht darüberlegen
 }));

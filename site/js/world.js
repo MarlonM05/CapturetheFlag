@@ -6,8 +6,8 @@
 
 const COL = {
   outside: '#2b2e2a',
-  ground: '#767b66',
-  paved: '#a39d90',
+  ground: '#a7a092',     // Stadtboden: helles Pflaster statt Rasenfläche
+  paved: '#b2ab9d',
   green: '#5d8c45',
   sand: '#d9c58c',
   water: '#2f6db0',
@@ -19,7 +19,7 @@ const COL = {
   rail: '#6d6257',
   stream: '#3f86c9',
 };
-const ROOF = ['#b5533c', '#8e3b2e', '#c96a3f', '#5f9e8a', '#7d8188', '#c9b48a', '#5b6068'];
+const ROOF = ['#b5533c', '#9c3f2c', '#c4623e', '#a8492f', '#8e3b2e', '#b85a3a', '#7f4a3a'];   // rote Ziegeldächer
 // warme Pastelltöne wie in oberschwäbischen Altstädten (Ocker, Rosé, Salbei, Creme, Hellblau)
 const WALL = ['#f3dfae', '#efc79a', '#e8b8a6', '#f5ead2', '#cfe0d6', '#f2d4c4', '#e4d7a8', '#f7e7c1', '#d8e4ea', '#f4c7b0', '#e9d2dc', '#dfe8c4', '#f0dcb8', '#e6c8a8'];
 
@@ -77,7 +77,7 @@ class World {
       return { segs, w: t.w, hgt: t.hgt, name: t.name, p: t.p, bb: [Math.min(...xs) - t.w, Math.min(...ys) - t.w, Math.max(...xs) + t.w, Math.max(...ys) + t.w] };
     });
     this.landmarks = map.landmarks || [];
-    this.rails = (map.rails || []).map(r => ({ ax: r.p[0], ay: r.p[1], az: r.p[2], bx: r.p[3], by: r.p[4], bz: r.p[5] }));
+    this.rails = (map.rails || []).map(r => ({ ax: r.p[0], ay: r.p[1], az: r.p[2], bx: r.p[3], by: r.p[4], bz: r.p[5], w: !!r.w }));
     // Gebäude
     this.buildings = map.buildings.map((b, i) => {
       const bb = polyBBox(b.p);
@@ -101,7 +101,7 @@ class World {
         if (u < mn) mn = u; if (u > mx) mx = u; if (v < mn2) mn2 = v; if (v > mx2) mx2 = v;
       }
       const hsh = hash32(i * 7919 + 13);
-      const flat = b.c === 4 || b.h < 4 || (mx - mn) * (mx2 - mn2) > 1800;
+      const flat = b.c === 4 || b.h < 4;
       // auf Hängen: Sockel am tiefsten Punkt, Dach über dem höchsten
       let tmin = Infinity, tmax = -Infinity;
       for (let k = 0; k < b.p.length; k += 2) { const t = this.terrain(b.p[k], b.p[k + 1]); if (t < tmin) tmin = t; if (t > tmax) tmax = t; }
@@ -157,7 +157,7 @@ class World {
     this.hTun = Array.from({ length: n }, () => []);
     // Leitplanken an Dämmen (kollidieren wie Wände in ihrem Höhenbereich)
     for (const r of this.rails) {
-      const e = { ax: r.ax, ay: r.ay, bx: r.bx, by: r.by, b: { top: Math.max(r.az, r.bz) + 1.1, base: Math.min(r.az, r.bz) - 2.5, p: null } };
+      const e = { ax: r.ax, ay: r.ay, bx: r.bx, by: r.by, b: { top: Math.max(r.az, r.bz) + (r.w ? 0.9 : 1.1), base: Math.min(r.az, r.bz) - (r.w ? 12 : 2.5), p: null } };
       add(this.hEdges, [Math.min(e.ax, e.bx), Math.min(e.ay, e.by), Math.max(e.ax, e.bx), Math.max(e.ay, e.by)], e);
     }
     this.decks.forEach(d => {
@@ -536,17 +536,15 @@ class World {
       for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
       if (close) g.closePath();
     };
-    // Bodenrauschen
+    // Kopfsteinpflaster als Muster (2 m Kachel)
     const rs = hash32(tx * 92821 + ty * 68917);
-    for (let i = 0; i < 90; i++) {
-      const h = hash32(rs + i);
-      g.fillStyle = i % 2 ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.04)';
-      g.beginPath(); g.arc(x0 + (h % 1000) / 1000 * TILE, y0 + ((h >>> 10) % 1000) / 1000 * TILE, 0.25 + (h % 7) / 10, 0, 7); g.fill();
-    }
+    const cob = cobblePattern(g, false), cob2 = cobblePattern(g, true);
+    if (cob) { g.fillStyle = cob; g.fillRect(Math.max(0, x0), Math.max(0, y0), Math.min(this.w, x1) - Math.max(0, x0), Math.min(this.h, y1) - Math.max(0, y0)); }
     for (const a of this.areas) if (a.t === 'green' && vis(a.bb)) { g.fillStyle = COL.green; path(a.p, true); g.fill(); }
     for (const a of this.areas) if (a.t === 'sand' && vis(a.bb)) { g.fillStyle = COL.sand; path(a.p, true); g.fill(); }
     for (const a of this.areas) if (a.t === 'paved' && vis(a.bb)) {
       g.fillStyle = COL.paved; path(a.p, true); g.fill();
+      if (a.cob ? cob2 : cob) { g.fillStyle = a.cob ? cob2 : cob; g.fill(); }
       g.strokeStyle = 'rgba(0,0,0,0.12)'; g.lineWidth = 0.4; g.stroke();
     }
     g.lineCap = 'round'; g.lineJoin = 'round';
@@ -671,21 +669,26 @@ function roofShape(b) {
     const len = i => Math.hypot(p[((i + 1) % 4) * 2] - p[i * 2], p[((i + 1) % 4) * 2 + 1] - p[i * 2 + 1]);
     const k = len(1) > len(0) ? 1 : 0;
     const P = i => [p[((i + k) % 4) * 2], p[((i + k) % 4) * 2 + 1]];
-    const half = len((k + 1) % 4) / 2, rise = Math.min(4.5, half * 0.85);
+    const half = len((k + 1) % 4) / 2, rise = Math.min(8.5, half * 0.95);   // steile Satteldächer (~45°)
     const a = P(0), d = P(3), bb = P(1), cc = P(2);
     return { t: 1, half, rise, r: [(a[0] + d[0]) / 2, (a[1] + d[1]) / 2, (bb[0] + cc[0]) / 2, (bb[1] + cc[1]) / 2] };
   }
-  if (n > 10) return null;
+  const mans = () => {   // verwinkelter Grundriss: umlaufend geneigtes (Mansard-)Dach
+    const sg = [];
+    for (let i = 0; i < n; i++) { const j = (i + 1) % n; sg.push([p[i * 2], p[i * 2 + 1], p[j * 2], p[j * 2 + 1]]); }
+    return { t: 3, rise: 3.4, d: 3.0, sg };
+  };
+  if (n > 10) return mans();
   let sign = 0;
   for (let i = 0; i < n; i++) {
     const a = i * 2, c1 = ((i + 1) % n) * 2, c2 = ((i + 2) % n) * 2;
     const cr = (p[c1] - p[a]) * (p[c2 + 1] - p[c1 + 1]) - (p[c1 + 1] - p[a + 1]) * (p[c2] - p[c1]);
     if (Math.abs(cr) < 1e-6) continue;
-    if (sign && Math.sign(cr) !== sign) return null;
+    if (sign && Math.sign(cr) !== sign) return mans();
     sign = Math.sign(cr);
   }
   let A = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; A += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; }
-  const rise = Math.min(4, Math.sqrt(Math.abs(A / 2)) * 0.22 + 1.2), ed = [];
+  const rise = Math.min(7, Math.sqrt(Math.abs(A / 2)) * 0.3 + 1.5), ed = [];
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n, ax = p[i * 2], ay = p[i * 2 + 1], L = Math.hypot(p[j * 2] - ax, p[j * 2 + 1] - ay) || 1;
     const nx = -(p[j * 2 + 1] - ay) / L, ny = (p[j * 2] - ax) / L;
@@ -701,9 +704,39 @@ function roofZ(b, x, y) {
     const d = Math.hypot(x - ax - dx * t, y - ay - dy * t);
     return b.top + f.rise * Math.max(0, 1 - d / f.half);
   }
+  if (f.t === 3) {
+    let dm = f.d;
+    for (const [ax, ay, bx, by] of f.sg) {
+      const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1, t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2));
+      dm = Math.min(dm, Math.hypot(x - ax - dx * t, y - ay - dy * t));
+    }
+    return b.top + f.rise * dm / f.d;
+  }
   let m = 1;
   for (const [ax, ay, nx, ny, da] of f.ed) m = Math.min(m, Math.abs((x - ax) * nx + (y - ay) * ny) / da);
   return b.top + f.rise * m;
+}
+
+// Kopfsteinpflaster-Muster (gecacht); fan = Fächerpflaster für Plätze
+const _cob = {};
+function cobblePattern(g, fan) {
+  const key = fan ? 'f' : 'n';
+  if (!_cob[key]) {
+    const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
+    x.strokeStyle = fan ? 'rgba(70,60,50,0.22)' : 'rgba(60,55,50,0.13)'; x.lineWidth = 1.4;
+    if (fan) {
+      for (let cy = 0; cy <= 64; cy += 32) for (let cx = 0; cx <= 64; cx += 32) for (let r = 6; r <= 30; r += 6) { x.beginPath(); x.arc(cx, cy + 16, r, Math.PI * 1.15, Math.PI * 1.85); x.stroke(); }
+    } else {
+      for (let y = 0; y < 64; y += 8) { x.beginPath(); x.moveTo(0, y); x.lineTo(64, y); x.stroke(); for (let xx = (y / 8) % 2 ? 4 : 0; xx < 64; xx += 8) { x.beginPath(); x.moveTo(xx, y); x.lineTo(xx, y + 8); x.stroke(); } }
+    }
+    _cob[key] = c;
+  }
+  try {
+    const pt = g.createPattern(_cob[key], 'repeat');
+    if (!pt || !pt.setTransform || typeof DOMMatrix === 'undefined') return null;
+    pt.setTransform(new DOMMatrix().scale(2 / 64));
+    return pt;
+  } catch (e) { return null; }
 }
 
 function drawRamp(g, r) {
