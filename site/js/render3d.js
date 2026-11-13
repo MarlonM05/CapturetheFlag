@@ -64,8 +64,17 @@ class Renderer3D {
     this.gl = R3.renderer(canvas);
     canvas.style.display = 'block';
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color('#a9cbe6');
-    this.scene.fog = new THREE.Fog('#b7d3ea', 150, 460);
+    this.scene.background = new THREE.Color('#cfe0ee');
+    this.scene.fog = new THREE.Fog('#cfe0ee', 160, 520);
+    // Himmelskuppel: tiefes Blau oben, heller dunstiger Horizont
+    {
+      const geo = new THREE.SphereGeometry(1400, 48, 32), pos = geo.attributes.position, col = [];
+      const zen = new THREE.Color('#4a8fdc'), hor = new THREE.Color('#d8e7f3'), c = new THREE.Color();
+      for (let i = 0; i < pos.count; i++) { const y = Math.max(0, pos.getY(i) / 1400); c.copy(hor).lerp(zen, Math.pow(y, 0.5)); col.push(c.r, c.g, c.b); }
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      this.sky = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false }));
+      this.sky.renderOrder = -10; this.scene.add(this.sky);
+    }
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.5, 1800);
     this.pitch = 1.1;    // ~63° von oben – weniger Verdeckung durch Häuser
     this.camDist = 125;
@@ -73,6 +82,7 @@ class Renderer3D {
     this.tmpV = new THREE.Vector3();
     this.dummy = new THREE.Object3D();
     this.disposables = [];
+    this.disposables.push(this.sky.geometry, this.sky.material);
     this.buildEnv();
     this.buildLights();
     this.buildGround();
@@ -134,6 +144,21 @@ class Renderer3D {
       if (W.terrain(x, y) < t.floor + 1.5) return false;
       return portals.some(([px, py]) => (x - px) ** 2 + (y - py) ** 2 < 26 * 26);
     };
+    // Zufahrt vor den Portalen: Geländegitter auf Fahrbahnhöhe absenken (sonst verdeckt der Hang die Öffnung)
+    const approach = [];
+    for (const tn of W.tunnels) {
+      const s0 = tn.segs[0], s1 = tn.segs[tn.segs.length - 1];
+      approach.push({ x: s0.ax, y: s0.ay, z: s0.az, ox: -(s0.bx - s0.ax) / s0.L, oy: -(s0.by - s0.ay) / s0.L, hw: tn.w / 2 });
+      approach.push({ x: s1.bx, y: s1.by, z: s1.bz, ox: (s1.bx - s1.ax) / s1.L, oy: (s1.by - s1.ay) / s1.L, hw: tn.w / 2 });
+    }
+    const groundZ = (x, y) => {
+      let z = W.terrain(x, y);
+      for (const a of approach) {
+        const d = (x - a.x) * a.ox + (y - a.y) * a.oy, lat = Math.abs(-(x - a.x) * a.oy + (y - a.y) * a.ox);
+        if (d > -2.5 && d < 9 && lat < a.hw + 2.5) z = Math.min(z, a.z);
+      }
+      return z;
+    };
     for (let ty = 0; ty * T < W.h; ty++) for (let tx = 0; tx * T < W.w; tx++) {
       const cv = W.renderTile(tx, ty, Z, { px: PX, flat3d: true });
       W.tiles.set(tx + ',' + ty, cv);
@@ -144,7 +169,7 @@ class Renderer3D {
       const pos = new Float32Array((n + 1) * (n + 1) * 3), uv = new Float32Array((n + 1) * (n + 1) * 2);
       for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
         const k = j * (n + 1) + i, x = x0 + i * T / n, y = y0 + j * T / n;
-        pos[k * 3] = x; pos[k * 3 + 1] = W.terrain(x, y); pos[k * 3 + 2] = y;
+        pos[k * 3] = x; pos[k * 3 + 1] = groundZ(x, y); pos[k * 3 + 2] = y;
         uv[k * 2] = i / n; uv[k * 2 + 1] = 1 - j / n;
       }
       const idx = [];
@@ -168,15 +193,21 @@ class Renderer3D {
     out.rotation.x = -Math.PI / 2; out.position.set(W.w / 2, -2.5, W.h / 2);
     this.scene.add(out);
     // Wasser als glänzende Fläche in Höhe des Wasserspiegels
+    const wave = this.facadeTex(128, 128, (g, w, h, k, hm) => {
+      g.fillStyle = k('#808080', 128); g.fillRect(0, 0, w, h);
+      for (let i = 0; i < 70; i++) { const x = (i * 37) % w, y = (i * 53) % h, r = 6 + (i * 7) % 14; const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, hm ? 'rgb(190,190,190)' : '#909090'); gr.addColorStop(1, hm ? 'rgba(128,128,128,0)' : 'rgba(128,128,128,0)'); g.fillStyle = gr; g.fillRect(x - r, y - r, r * 2, r * 2); }
+    });
+    this.waterN = wave.nmap; this.waterN.repeat.set(1, 1);
+    const waterM = this.mat({ color: '#2a67a6', specular: '#e8f4ff', shininess: 120, normalMap: wave.nmap, normalScale: new THREE.Vector2(0.55, 0.55), transparent: true, opacity: 0.88 }, 'Phong');
     for (const w of W.water) {
-      const geo = this.polyGeo(w.p, w.z + 0.05);
+      const geo = this.polyGeo(w.p, w.z + 0.05, 14);
       if (!geo) continue;
-      const m = new THREE.Mesh(geo, this.mat({ color: '#2f6db0', specular: '#cfe6ff', shininess: 90, transparent: true, opacity: 0.85 }, 'Phong'));
+      const m = new THREE.Mesh(geo, waterM);
       m.receiveShadow = true;
       this.scene.add(m);
     }
   }
-  polyGeo(p, y) {
+  polyGeo(p, y, uvScale) {
     const pts = [];
     for (let i = 0; i < p.length; i += 2) pts.push(new THREE.Vector2(p[i], p[i + 1]));
     let tris;
@@ -186,6 +217,7 @@ class Renderer3D {
     for (const t of tris) for (const k of [t[0], t[2], t[1]]) pos.push(pts[k].x, y, pts[k].y);
     const g = this.track(new THREE.BufferGeometry());
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    if (uvScale) { const uv = []; for (let i = 0; i < pos.length; i += 3) uv.push(pos[i] / uvScale, pos[i + 2] / uvScale); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); }
     g.computeVertexNormals();
     return g;
   }
@@ -331,6 +363,7 @@ class Renderer3D {
     const B_ = () => ({ pos: [], col: [], uv: [] });
     const wallA = B_(), wallB = B_(), shopB = B_(), arcB = B_(), roofB = B_(), trim = B_();
     const towers = [];   // runde Ecktürme mit Kegeldach: [x, y, r, z0, h, Wandfarbe, Dachfarbe]
+    const dormers = [], chimneys = [];   // Dachgauben [x, z, y, Drehung, Wandfarbe, Dachfarbe], Schornsteine [x, z, y]
     let bi = 0;
     const put = (B, v, c, u) => { B.pos.push(v[0], v[1], v[2]); B.col.push(c.r, c.g, c.b); B.uv.push(u[0], u[1]); };
     const tri = (B, a, b, c, col, ua, ub, uc) => { put(B, a, col, ua); put(B, b, col, ub); put(B, c, col, uc); };
@@ -413,6 +446,18 @@ class Renderer3D {
         const q = v => [v[0], h, v[1]], rr0 = [m0[0], rh, m0[1]], rr1 = [m1[0], rh, m1[1]];
         tri(wall, q(p3), q(p0), rr0, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
         tri(wall, q(p1), q(p2), rr1, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
+        // Dachgauben auf beiden Dachseiten, ein Schornstein am First
+        if (rise >= 3.2 && lr >= 6.5 && half >= 3.2 && hsh % 4 !== 0) {
+          const cnt = Math.max(1, Math.min(4, Math.floor(lr / 6.5))), dOut = half * 0.42, zr = h + rise * (1 - dOut / half);
+          for (const [pa, ma] of [[p0, m0], [p3, m0]]) {
+            const vx = pa[0] - ma[0], vy = pa[1] - ma[1], vl = Math.hypot(vx, vy) || 1, ox = vx / vl, oy = vy / vl;
+            for (let q2 = 0; q2 < cnt; q2++) {
+              const t = (q2 + 0.5) / cnt;
+              dormers.push([m0[0] + ux * lr * t + ox * dOut, zr - 0.15, m0[1] + uy * lr * t + oy * dOut, -Math.atan2(oy, ox), wc, rc]);
+            }
+          }
+        }
+        if (hsh % 3 !== 1 && lr > 5) chimneys.push([m0[0] + ux * lr * 0.28 + (p0[0] - m0[0]) * 0.12, rh - 0.9, m0[1] + uy * lr * 0.28 + (p0[1] - m0[1]) * 0.12]);
         // manche Eckhäuser bekommen einen runden Turm mit spitzem Kegeldach
         const sh = Math.min(len(0), len(1));
         if (hsh % 9 === 0 && sh > 9 && h - z0 > 7) {
@@ -488,6 +533,27 @@ class Renderer3D {
     mk(wallA, F.up.map, F.up.nmap); mk(wallB, F.upArch.map, F.upArch.nmap);
     mk(shopB, F.shop.map, F.shop.nmap); mk(arcB, F.arcade.map, F.arcade.nmap);
     mk(roofB, T.roof); mk(trim, null);
+    if (dormers.length) {
+      // Gaube: Körper (Wandfarbe), Fenster, kleines Satteldach (Dachfarbe); lokal zeigt +x nach außen
+      const body = this.track(new THREE.BoxGeometry(2.4, 1.7, 1.9)); body.translate(-1.0, 0.85, 0);
+      const win = this.track(new THREE.PlaneGeometry(1.1, 1.0)); win.rotateY(Math.PI / 2); win.translate(0.21, 0.85, 0);
+      const cap = this.track(new THREE.BufferGeometry());
+      cap.setAttribute('position', new THREE.Float32BufferAttribute([0.35, 1.7, -1.15, -2.3, 1.7, -1.15, -2.3, 2.55, 0, 0.35, 1.7, -1.15, -2.3, 2.55, 0, 0.35, 2.55, 0, -2.3, 1.7, 1.15, 0.35, 1.7, 1.15, 0.35, 2.55, 0, -2.3, 1.7, 1.15, 0.35, 2.55, 0, -2.3, 2.55, 0, 0.35, 1.7, 1.15, 0.35, 1.7, -1.15, 0.35, 2.55, 0], 3));
+      cap.computeVertexNormals();
+      const mB = new THREE.InstancedMesh(body, this.mat({}), dormers.length), mW = new THREE.InstancedMesh(win, this.mat({ color: '#2c3946' }), dormers.length), mC = new THREE.InstancedMesh(cap, this.mat({ map: T.roof, side: THREE.DoubleSide }), dormers.length);
+      const d = this.dummy;
+      dormers.forEach(([x, z, y, ry, wc, rc], i) => {
+        d.position.set(x, z, y); d.rotation.set(0, ry, 0); d.scale.set(1, 1, 1); d.updateMatrix();
+        mB.setMatrixAt(i, d.matrix); mW.setMatrixAt(i, d.matrix); mC.setMatrixAt(i, d.matrix);
+        mB.setColorAt(i, wc); mC.setColorAt(i, rc);
+      });
+      for (const m of [mB, mW, mC]) { m.castShadow = true; m.receiveShadow = true; this.scene.add(m); }
+    }
+    if (chimneys.length) {
+      const mc = new THREE.InstancedMesh(this.track(roundBox(0.8, 2.0, 0.8, 0.06)), this.mat({ color: '#8a4a3a' }), chimneys.length), d = this.dummy;
+      chimneys.forEach(([x, z, y], i) => { d.position.set(x, z + 1.0, y); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); d.updateMatrix(); mc.setMatrixAt(i, d.matrix); });
+      mc.castShadow = true; this.scene.add(mc);
+    }
     if (towers.length) {
       const cyl = new THREE.InstancedMesh(this.track(new THREE.CylinderGeometry(1, 1, 1, 16)), this.mat({ map: F.up.map, normalMap: F.up.nmap, specular: '#0c0c0c', shininess: 6 }, 'Phong'), towers.length);
       const cone = new THREE.InstancedMesh(this.track(new THREE.ConeGeometry(1.18, 1, 16)), this.mat({ map: T.roof }), towers.length);
@@ -667,13 +733,18 @@ class Renderer3D {
   // ---------------- Tunnel: Röhre mit Licht und Portalen ----------------
   buildTunnels() {
     const W = this.game.world, T = this.makeTextures();
-    const wallM = this.mat({ color: '#8f8a80', emissive: '#2e2b26', side: THREE.DoubleSide });
+    const wt = document.createElement('canvas'); wt.width = 128; wt.height = 256;
+    { const g = wt.getContext('2d'); g.fillStyle = '#9a958c'; g.fillRect(0, 0, 128, 256); g.fillStyle = '#e9e6dc'; g.fillRect(0, 170, 128, 86);
+      g.strokeStyle = 'rgba(0,0,0,0.18)'; g.lineWidth = 2; for (let y = 170; y < 256; y += 14) { g.beginPath(); g.moveTo(0, y); g.lineTo(128, y); g.stroke(); } for (let x = 0; x < 128; x += 21) { g.beginPath(); g.moveTo(x, 170); g.lineTo(x, 256); g.stroke(); }
+      g.fillStyle = '#d8a21f'; g.fillRect(0, 164, 128, 6); g.fillStyle = 'rgba(0,0,0,0.08)'; for (let i = 0; i < 40; i++) g.fillRect((i * 37) % 128, (i * 61) % 160, 6, 3); }
+    const wtex = this.track(new THREE.CanvasTexture(wt)); wtex.wrapS = THREE.RepeatWrapping;
+    const wallM = this.mat({ map: wtex, emissive: '#2a2824', side: THREE.DoubleSide });
     const ceilM = this.mat({ color: '#6c6862', emissive: '#1e1c19', side: THREE.DoubleSide });
     const roadM = this.mat({ map: T.asphalt, emissive: '#1a1a1a' });
     const lampM = this.mat({ color: '#fff3c4', emissive: '#ffe08a' });
     const rockM = this.mat({ color: '#6f6a5c' });
     for (const tn of W.tunnels) {
-      const wall = [], ceil = [], road = [], ruv = [];
+      const wall = [], ceil = [], road = [], ruv = [], wuv = [];
       const hw = tn.w / 2, H = tn.hgt;
       let acc = 0;
       for (const sg of tn.segs) {
@@ -683,6 +754,7 @@ class Renderer3D {
         for (const s of [1, -1]) {
           const a0 = P(A, s, 0), b0 = P(B, s, 0), a1 = P(A, s, H), b1 = P(B, s, H);
           wall.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+          const w0 = acc / 4, w1 = (acc + sg.L) / 4; wuv.push(w0, 0, w1, 0, w1, 1, w0, 0, w1, 1, w0, 1);
         }
         const l0 = P(A, 1, H), r0 = P(A, -1, H), l1 = P(B, 1, H), r1 = P(B, -1, H);
         ceil.push(...l0, ...l1, ...r1, ...l0, ...r1, ...r0);
@@ -705,7 +777,7 @@ class Renderer3D {
         g.computeVertexNormals();
         const mesh = new THREE.Mesh(g, m); mesh.receiveShadow = true; this.scene.add(mesh); return mesh;
       };
-      mk(wall, wallM); mk(ceil, ceilM).castShadow = true; mk(road, roadM, ruv);
+      mk(wall, wallM, wuv); mk(ceil, ceilM).castShadow = true; mk(road, roadM, ruv);
       // Portale: Betonrahmen und Stützmauer bis zum Hang
       const ends = [[tn.segs[0].ax, tn.segs[0].ay, tn.segs[0].az, tn.segs[0]], [tn.segs[tn.segs.length - 1].bx, tn.segs[tn.segs.length - 1].by, tn.segs[tn.segs.length - 1].bz, tn.segs[tn.segs.length - 1]]];
       for (const [x, y, z, sg] of ends) {
@@ -742,6 +814,8 @@ class Renderer3D {
       const g = new THREE.Group();
       g.position.set(lm.x, W.terrain(lm.x, lm.y) - 0.5, lm.y); g.rotation.y = -lm.a;
       if (lm.t === 'basilika') this.buildBasilika(g, { box, cyl, dome, prism, white, cream, copper });
+      else if (lm.t === 'turm') this.buildTurm(g, lm);
+      else if (lm.t === 'kirche') this.buildKirche(g, lm);
       else if (lm.t === 'blaserturm') {
         // Blaserturm am Marienplatz: Quaderschaft, achteckiger Aufsatz, grüne Haube
         box(g, 8, 36, 8, sand, 0, 0, 0); box(g, 8.6, 1, 8.6, stone, 0, 36, 0);
@@ -760,6 +834,103 @@ class Renderer3D {
       g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
       this.scene.add(g);
     }
+  }
+  // gemeinsame Helfer für Altstadt-Bauten: Canvas-Textur, Box mit Kachel-UVs, steiles Satteldach, Pyramide
+  lmKit() {
+    if (this._lmKit) return this._lmKit;
+    const T = this.makeTextures();
+    const tex = (w, h, draw) => { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); const t = this.track(new THREE.CanvasTexture(c)); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = this.gl.capabilities.getMaxAnisotropy(); return t; };
+    // mittelalterlicher Turm: Putz mit Eckquadern und schmalen Fenstern (Kachel 8 m)
+    const towerT = tex(256, 256, (g, w, h) => {
+      g.fillStyle = '#eee6d6'; g.fillRect(0, 0, w, h);
+      for (let y = 0; y < h; y += 32) { g.fillStyle = (y / 32) % 2 ? '#d9cdb5' : '#e3d8c2'; g.fillRect(0, y, 22, 30); g.fillRect(w - 22, y + 16 > h ? 0 : y, 22, 30); }
+      g.fillStyle = '#3b3530'; g.fillRect(118, 70, 20, 54); g.beginPath(); g.arc(128, 70, 10, Math.PI, 0); g.fill();
+      g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(118, 124, 20, 4);
+    });
+    // gotische Kirchenwand: Strebepfeiler und hohe Spitzbogenfenster (Kachel 8 m)
+    const gothT = tex(256, 256, (g, w, h) => {
+      g.fillStyle = '#e7dfcf'; g.fillRect(0, 0, w, h);
+      g.fillStyle = '#d2c6ae'; g.fillRect(0, 0, 26, h);
+      g.fillStyle = '#b9ad95'; g.beginPath(); g.moveTo(90, 236); g.lineTo(90, 70); g.quadraticCurveTo(90, 30, 128, 18); g.quadraticCurveTo(166, 30, 166, 70); g.lineTo(166, 236); g.closePath(); g.fill();
+      const gr = g.createLinearGradient(0, 30, 0, 230); gr.addColorStop(0, '#5a6d82'); gr.addColorStop(1, '#2d3846');
+      g.fillStyle = gr; g.beginPath(); g.moveTo(98, 230); g.lineTo(98, 72); g.quadraticCurveTo(98, 40, 128, 28); g.quadraticCurveTo(158, 40, 158, 72); g.lineTo(158, 230); g.closePath(); g.fill();
+      g.fillStyle = '#b9ad95'; g.fillRect(126, 40, 4, 190); g.fillRect(98, 120, 60, 3);
+    });
+    const glazed = tex(64, 64, (g) => {   // glasierte Ziegel im Rautenmuster (Grüner Turm)
+      g.fillStyle = '#2f7a4f'; g.fillRect(0, 0, 64, 64);
+      g.fillStyle = '#4fae6f'; for (let y = 0; y < 64; y += 16) for (let x = (y / 16) % 2 ? 8 : 0; x < 64; x += 16) { g.beginPath(); g.moveTo(x + 8, y); g.lineTo(x + 16, y + 8); g.lineTo(x + 8, y + 16); g.lineTo(x, y + 8); g.closePath(); g.fill(); }
+    });
+    const M = o => this.mat(o);
+    const kit = {
+      tower: M({ map: towerT }), goth: M({ map: gothT }), plain: M({ color: '#e9e1d0' }), stone: M({ color: '#cbbfa8' }),
+      roofRed: M({ map: T.roof, color: '#b0503a', side: THREE.DoubleSide }), roofGreen: M({ map: glazed, side: THREE.DoubleSide }),
+      slate: this.mat({ color: '#565c66', metalness: 0.3, roughness: 0.5, side: THREE.DoubleSide }, 'Standard'), dark: M({ color: '#2b2622' }), gold: M({ color: '#e2bf5a' }),
+    };
+    kit.box = (g, w, h, d, m, x, y, z, tile = 8) => {
+      const geo = this.track(new THREE.BoxGeometry(w, h, d)), uv = geo.attributes.uv, dims = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+      for (let f = 0; f < 6; f++) for (let k = 0; k < 4; k++) { const i = f * 4 + k; uv.setXY(i, uv.getX(i) * dims[f][0] / tile, uv.getY(i) * dims[f][1] / tile); }
+      const o = new THREE.Mesh(geo, m); o.position.set(x, y + h / 2, z); g.add(o); return o;
+    };
+    kit.gable = (g, L, w, h, m, x, y, z) => {   // Satteldach entlang x, mit Überstand
+      const a = L / 2 + 0.4, b = w / 2 + 0.6, geo = this.track(new THREE.BufferGeometry());
+      const v = [-a, 0, -b, a, 0, -b, a, h, 0, -a, 0, -b, a, h, 0, -a, h, 0, a, 0, b, -a, 0, b, -a, h, 0, a, 0, b, -a, h, 0, a, h, 0];
+      const sl = Math.hypot(b, h) / 3, ll = L / 3;
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, ll, 0, ll, sl, 0, 0, ll, sl, 0, sl, 0, 0, ll, 0, ll, sl, 0, 0, ll, sl, 0, sl], 2)); geo.computeVertexNormals();
+      const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); g.add(o);
+      const gg = this.track(new THREE.BufferGeometry()), hh = h * (w / 2) / b;
+      gg.setAttribute('position', new THREE.Float32BufferAttribute([-L / 2, 0, -w / 2, -L / 2, 0, w / 2, -L / 2, hh, 0, L / 2, 0, w / 2, L / 2, 0, -w / 2, L / 2, hh, 0], 3)); gg.computeVertexNormals();
+      const gm = new THREE.Mesh(gg, kit.plain); gm.position.set(x, y, z); g.add(gm);
+      return o;
+    };
+    kit.pyramid = (g, w, h, m, x, y, z, seg = 4) => {
+      const geo = this.track(new THREE.ConeGeometry(w / 2 * Math.SQRT2 * (seg === 4 ? 1 : 0.75) + 0.3, h, seg, 1, true));
+      const uv = geo.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / 2, uv.getY(i) * h / 3);
+      const o = new THREE.Mesh(geo, m); o.position.set(x, y + h / 2, z); if (seg === 4) o.rotation.y = Math.PI / 4; g.add(o); return o;
+    };
+    return (this._lmKit = kit);
+  }
+  // Stadttürme der Ravensburger Altstadt (Grüner Turm, Frauentor, Untertor, Spitalturm, Obertor)
+  buildTurm(g, lm) {
+    const K = this.lmKit(), w = lm.w, d = lm.d, s = lm.s;
+    const roofH = s === 'treppe' ? w * 0.85 : s === 'gruen' ? w * 1.5 : s === 'helm' ? w * 1.2 : w * 1.25;
+    const shaft = Math.max(12, lm.h - roofH);
+    K.box(g, w, shaft, d, K.tower, 0, 0, 0);
+    K.box(g, w + 0.6, 0.6, d + 0.6, K.stone, 0, shaft - 0.6, 0, 4);   // Gesims
+    // Torbogen (Frauentor/Obertor) an beiden Seiten, Uhr oben
+    if (s === 'treppe') for (const sg of [1, -1]) { const ar = new THREE.Mesh(this.track(new THREE.PlaneGeometry(w * 0.45, 5.5)), K.dark); ar.position.set(sg * (w / 2 + 0.03), 2.75, 0); ar.rotation.y = sg * Math.PI / 2; g.add(ar); }
+    if (s === 'treppe') {
+      K.gable(g, w, d, roofH, K.roofRed, 0, shaft, 0);
+      // Treppengiebel an den Stirnseiten
+      for (const sg of [1, -1]) for (let k = 0; k < 5; k++) { const bw = d * (1 - k / 5.5); K.box(g, 0.7, roofH / 5 + 0.05, bw, K.plain, sg * (w / 2 - 0.2), shaft + k * roofH / 5, 0, 4); }
+    } else if (s === 'gruen') {
+      K.pyramid(g, w, roofH, K.roofGreen, 0, shaft, 0);
+      const sp = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.08, 0.08, 3, 6)), K.gold); sp.position.set(0, shaft + roofH + 1.2, 0); g.add(sp);
+    } else if (s === 'helm') {
+      K.pyramid(g, w, roofH * 0.55, K.roofRed, 0, shaft, 0);
+      K.box(g, w * 0.35, 3, w * 0.35, K.plain, 0, shaft + roofH * 0.5, 0, 4);
+      K.pyramid(g, w * 0.4, roofH * 0.5, K.slate, 0, shaft + roofH * 0.5 + 3, 0, 8);
+    } else {
+      K.pyramid(g, w, roofH, K.roofRed, 0, shaft, 0);
+    }
+  }
+  // gotische Kirche: Langhaus mit Strebepfeilern und Spitzbogenfenstern, steiles Ziegeldach, Chor, Westturm mit Spitzhelm
+  buildKirche(g, lm) {
+    const K = this.lmKit(), L = lm.L, Wd = lm.W, tw = lm.tw, h = lm.h, th = lm.th;
+    const nl = L - tw, nx = tw / 2;
+    K.box(g, nl, h, Wd, K.goth, nx, 0, 0);
+    K.gable(g, nl, Wd, Wd * 0.8, K.roofRed, nx, h, 0);
+    // Chor: halbrund am Ostende
+    const ch = new THREE.Mesh(this.track(new THREE.CylinderGeometry(Wd * 0.42, Wd * 0.42, h * 0.92, 10, 1, false, 0, Math.PI)), K.goth);
+    ch.position.set(nx + nl / 2, h * 0.46, 0); g.add(ch);
+    const cr = new THREE.Mesh(this.track(new THREE.ConeGeometry(Wd * 0.46, Wd * 0.6, 10, 1, true, 0, Math.PI)), K.roofRed); cr.position.set(nx + nl / 2, h * 0.92 + Wd * 0.3, 0); g.add(cr);
+    // Westturm
+    const shaft = th * 0.6;
+    K.box(g, tw, shaft, tw, K.tower, -L / 2 + tw / 2, 0, 0);
+    K.box(g, tw + 0.5, 0.6, tw + 0.5, K.stone, -L / 2 + tw / 2, shaft - 0.6, 0, 4);
+    K.box(g, tw * 0.82, th * 0.1, tw * 0.82, K.tower, -L / 2 + tw / 2, shaft, 0);
+    K.pyramid(g, tw * 0.82, th * 0.3, K.slate, -L / 2 + tw / 2, shaft + th * 0.1, 0, 8);
+    const cross = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.15, 2.2, 0.15)), K.gold); cross.position.set(-L / 2 + tw / 2, th + 1, 0); g.add(cross);
+    const portal = new THREE.Mesh(this.track(new THREE.PlaneGeometry(3.2, 5)), K.dark); portal.position.set(-L / 2 - 0.03, 2.5, 0); portal.rotation.y = -Math.PI / 2; g.add(portal);
   }
   // Basilika St. Martin: helle Barockfassade mit Pilastern und Rundbogenfenstern, Doppeltürme mit Kupferhauben,
   // steile rote Ziegeldächer über Langhaus und Querhaus, Kuppel mit Tambour über der Vierung
@@ -860,8 +1031,12 @@ class Renderer3D {
     const T = this.game.world.trees, Wt = this.game.world;
     if (!T.length) return;
     const trunk = new THREE.InstancedMesh(this.track(new THREE.CylinderGeometry(0.22, 0.32, 1, 6)), this.mat({ color: '#5b4630' }), T.length);
-    const crown = new THREE.InstancedMesh(this.track(new THREE.IcosahedronGeometry(1, 1)), this.mat({ color: '#ffffff', flatShading: true }), T.length);
-    const shades = ['#3f7a35', '#4b8a3a', '#36702f'];
+    const cg = this.track(new THREE.IcosahedronGeometry(1, 2)), cp = cg.attributes.position;
+    for (let i = 0; i < cp.count; i++) { const x = cp.getX(i), y = cp.getY(i), z = cp.getZ(i), f = 1 + 0.12 * Math.sin(x * 5.1 + y * 3.7) * Math.cos(z * 4.3); cp.setXYZ(i, x * f, y * f, z * f); }
+    cg.computeVertexNormals();
+    const crown = new THREE.InstancedMesh(cg, this.mat({ color: '#ffffff' }), T.length);
+    const crown2 = new THREE.InstancedMesh(cg, this.mat({ color: '#ffffff' }), T.length);
+    const shades = ['#3d6f2f', '#4f8436', '#35652c'];
     const d = this.dummy;
     T.forEach((t, i) => {
       const gz = Wt.terrain(t.x, t.y);
@@ -870,8 +1045,11 @@ class Renderer3D {
       d.position.set(t.x, gz + t.h * 0.68, t.y); d.rotation.set(0, i, 0); d.scale.set(t.r, t.r * 1.15, t.r); d.updateMatrix();
       crown.setMatrixAt(i, d.matrix);
       crown.setColorAt(i, R3.col(shades[t.hue]));
+      d.position.set(t.x + Math.cos(i) * t.r * 0.45, gz + t.h * 0.82, t.y + Math.sin(i) * t.r * 0.45); d.scale.set(t.r * 0.68, t.r * 0.72, t.r * 0.68); d.updateMatrix();
+      crown2.setMatrixAt(i, d.matrix);
+      crown2.setColorAt(i, R3.col(shades[(t.hue + 1) % 3]).clone().multiplyScalar(1.08));
     });
-    for (const m of [trunk, crown]) { m.castShadow = true; m.receiveShadow = true; this.scene.add(m); }
+    for (const m of [trunk, crown, crown2]) { m.castShadow = true; m.receiveShadow = true; this.scene.add(m); }
   }
 
   // ---------------- Rampen, Basen, Kisten ----------------
@@ -946,7 +1124,7 @@ class Renderer3D {
       const m = this.track(new THREE.ShaderMaterial({
         uniforms: { scale: { value: 600 } },
         vertexShader: 'attribute vec3 pcolor; attribute float psize; attribute float palpha; uniform float scale; varying vec3 vC; varying float vA;' +
-          'void main(){ vC=pcolor; vA=palpha; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=max(1.0, psize*scale/-mv.z); gl_Position=projectionMatrix*mv; }',
+          'void main(){ vC=pcolor; vec4 mv=modelViewMatrix*vec4(position,1.0); float d=-mv.z; vA=palpha*smoothstep(2.5,9.0,d); gl_PointSize=clamp(psize*scale/d, 1.0, 220.0); gl_Position=projectionMatrix*mv; }',
         fragmentShader: 'varying vec3 vC; varying float vA; void main(){ vec2 c=gl_PointCoord-0.5; float d=length(c); if(d>0.5) discard; gl_FragColor=vec4(vC, vA*smoothstep(0.5,0.25,d)); }',
         transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
       }));
@@ -1176,19 +1354,26 @@ class Renderer3D {
       const Wd = G.world;
       let need = cz + up;
       // im Tunnel / unter einer Brücke: unter der Decke bleiben und näher ran
-      const inTun = Wd.tunnelAt(cx, cy), under = Wd.ceilingAt(cx, cy, cz);
-      let bk = back;
-      if (inTun && cz < inTun.ceil - 0.5) bk = Math.min(back, 8);
+      const under = Wd.ceilingAt(cx, cy, cz);
+      // liegt irgendein Punkt zwischen Auto und Kamera im Tunnel (auf Fahrbahnhöhe)? -> unter der Decke bleiben, näher ran
+      let tunCap = null;
+      for (let s = 0; s <= 1.001; s += 0.1) {
+        const t = Wd.tunnelAt(cx - fx * back * s, cy - fy * back * s);
+        if (t && cz < t.ceil - 0.5) tunCap = Math.min(tunCap ?? 1e9, t.ceil - 0.8);
+      }
+      const bkWant = tunCap !== null ? Math.min(back, 7.5) : back;
+      this.camBk = this.camBk == null ? bkWant : this.camBk + (bkWant - this.camBk) * Math.min(1, (dt || 0.016) * 4);
+      const bk = this.camBk;
       for (let s = 0.2; s <= 1.001; s += 0.2) {
         const sx2 = cx - fx * bk * s, sy2 = cy - fy * bk * s;
         const b = Wd.buildingAt(sx2, sy2);
         if (b) need = Math.max(need, b.top + (b.rf ? b.rf.rise + 1.8 : 2.5));
-        const tnS = Wd.tunnelAt(sx2, sy2);
-        if (!(inTun && tnS)) need = Math.max(need, Wd.terrain(sx2, sy2) + 2.5);
+        if (tunCap === null) need = Math.max(need, Wd.terrain(sx2, sy2) + 2.5);
       }
-      if (inTun && cz < inTun.ceil - 0.5) need = Math.min(need, inTun.ceil - 0.8);
+      if (tunCap !== null) need = Math.min(Math.max(need, cz + 2.2), tunCap);
       else if (under !== null) need = Math.min(need, under - 0.6);
       this.camH = this.camH == null ? need : this.camH + (need - this.camH) * Math.min(1, (dt || 0.016) * (need > this.camH ? 6 : 2.5));
+      if (tunCap !== null && this.camH > tunCap) this.camH = tunCap;   // im Tunnel nie über der Decke
       cam.position.set(cx - fx * bk, this.camH, cy - fy * bk);
       cam.lookAt(cx + fx * 10, cz + 1.4 + lp * 12, cy + fy * 10);
       if (cam.fov !== 68) { cam.fov = 68; cam.updateProjectionMatrix(); this.updatePointScale(); }
@@ -1265,6 +1450,7 @@ class Renderer3D {
   // ---------------- Bild zeichnen ----------------
   render(dt, time) {
     const G = this.game;
+    if (this.waterN) { this.waterN.offset.x += (dt || 0.016) * 0.012; this.waterN.offset.y += (dt || 0.016) * 0.007; }
     // Bildrate im Blick: bei dauerhaft < 40 FPS die Auflösung stufenweise senken
     this.slowT = Math.max(0, (this.slowT || 0) + (dt > 1 / 40 ? dt : -dt * 0.5));
     if (this.slowT > 2.5 && (this.dprCap || 2) > 1 && (window.devicePixelRatio || 1) > 1) { this.dprCap = Math.max(1, (this.dprCap || 2) - 0.25); this.slowT = 0; this.resize(); }
@@ -1370,6 +1556,7 @@ class Renderer3D {
     // Partikel
     this.fillParticles(this.pNormal, false);
     this.fillParticles(this.pAdd, true);
+    if (this.sky) { this.sky.position.copy(this.camera.position); this.sky.updateMatrixWorld(); }
     this.gl.render(this.scene, this.camera);
   }
   fillParticles(pts, add) {

@@ -30,7 +30,16 @@ bm.BLOCK_INSET = 1.6
 bm.ROAD_EXTRA = 2.0
 bm.TREE_KEEP = 0.4
 
-RV = dict(id="ravensburg", name="Ravensburg", sub="", bbox=(9.6075, 47.7772, 9.6195, 47.7840), bases_m=[(100, 100), (500, 300)])
+# Ravensburg: Ausschnitt eng um die Altstadt, stärker vergrößert und mit breiteren Gassen (gut befahrbar)
+RV = dict(id="ravensburg", name="Ravensburg", sub="", bbox=(9.60758, 47.77783, 9.61801, 47.7840), bases_m=[(100, 100), (500, 300)],
+          scale=1.32, inset=2.4, road_extra=4.0)
+# Wahrzeichen der Ravensburger Altstadt nach OSM-Namen: Typ, Stil, Höhe (m, vor Skalierung egal – echte Höhe)
+RV_LANDMARKS = {
+    "Blaserturm": dict(t="blaserturm"), "Mehlsack": dict(t="mehlsack"), "Veitsburg": dict(t="veitsburg", a=0.35),
+    "Grüner Turm": dict(t="turm", s="gruen", h=30), "Frauentor": dict(t="turm", s="treppe", h=35),
+    "Untertor": dict(t="turm", s="zelt", h=36), "Spitalturm": dict(t="turm", s="helm", h=44), "Obertor": dict(t="turm", s="treppe", h=28),
+    "Liebfrauenkirche": dict(t="kirche", h=20, th=52), "Evangelische Stadtkirche": dict(t="kirche", h=18, th=42),
+}
 WG = dict(id="weingarten", name="Weingarten", sub="", bbox=(9.6375, 47.8055, 9.6490, 47.8112), bases_m=[(100, 100), (500, 300)])
 OFF = {"ravensburg": (0.0, 948.0), "weingarten": (300.0, 0.0)}
 RES = 4.0                  # Raster der Höhenkarte in Metern
@@ -78,10 +87,7 @@ JUMP_RAMPS = [  # x, y, Richtung (Fluss überspringen)
 ]
 LANDMARKS = [
     dict(t="basilika", x=900.0, y=262.0, a=0.0),
-    dict(t="blaserturm", x=534.0, y=1189.0, a=0.0),
-    dict(t="mehlsack", x=693.0, y=1539.0, a=0.0),
-    dict(t="veitsburg", x=781.0, y=1699.0, a=0.35),
-]
+]   # Ravensburger Wahrzeichen kommen in main() aus den OSM-Daten dazu
 BASES = [(818.0, 262.0), (540.0, 1268.0)]   # Rot (Weingarten, auf dem Basilika-Vorplatz), Blau (Ravensburg)
 # Basilika-Vorplatz: gepflasterte Terrasse auf Fassadenhöhe mit geschwungenen Stützmauern und zwei breiten Rampen
 TERRACE = dict(x0=790.0, x1=851.0, y0=194.0, y1=330.0, r=22.0)
@@ -108,7 +114,57 @@ def landmark_boxes(lm):
         return [("round", 0, 0, 6.2, 51)]
     if t == "veitsburg":
         return [(0, 0, 30, 13, 13), (-11, -4, 7, 7, 24)]
+    if t == "turm":
+        return [(0, 0, lm["w"], lm["d"], lm["h"])]
+    if t == "kirche":
+        L, Wd, tw = lm["L"], lm["W"], lm["tw"]
+        return [(tw / 2, 0, L - tw, Wd, lm["h"]), (-L / 2 + tw / 2, 0, tw, tw, lm["th"])]
     return []
+
+
+def rv_landmarks(osm_dir):
+    """Lage, Größe und Ausrichtung der Altstadt-Wahrzeichen aus den OSM-Grundrissen (Weltkoordinaten)."""
+    import xml.etree.ElementTree as ET
+    minlon, minlat, maxlon, maxlat = RV["bbox"]
+    kx = 111320 * math.cos(math.radians((minlat + maxlat) / 2)); ky = 110540; sc = RV["scale"]; ox, oy = OFF["ravensburg"]
+    P = lambda lon, lat: (ox + (lon - minlon) * kx * sc, oy + (maxlat - lat) * ky * sc)
+    root = ET.parse(f"{osm_dir}/ravensburg.osm").getroot()
+    nodes = {n.get("id"): (float(n.get("lon")), float(n.get("lat"))) for n in root.iter("node")}
+    out, square = [], None
+    for w in root.iter("way"):
+        tags = {c.get("k"): c.get("v") for c in w if c.tag == "tag"}
+        nm = tags.get("name")
+        pts = [P(*nodes[nd.get("ref")]) for nd in w if nd.tag == "nd" and nd.get("ref") in nodes]
+        if nm == "Marienplatz" and tags.get("place") == "square" and len(pts) > 3:
+            square = Polygon(pts).centroid
+        if nm not in RV_LANDMARKS or len(pts) < 4:
+            continue
+        if any(o["name"] == nm for o in out):
+            continue
+        poly = Polygon(pts)
+        if not poly.is_valid or poly.area < 10:
+            continue
+        rect = list(poly.minimum_rotated_rectangle.exterior.coords)[:4]
+        e1 = (rect[1][0] - rect[0][0], rect[1][1] - rect[0][1]); e2 = (rect[2][0] - rect[1][0], rect[2][1] - rect[1][1])
+        l1, l2 = math.hypot(*e1), math.hypot(*e2)
+        long_e = e1 if l1 >= l2 else e2
+        a = math.atan2(long_e[1], long_e[0])
+        L, Wd = max(l1, l2), min(l1, l2)
+        c = poly.centroid
+        spec = dict(RV_LANDMARKS[nm])
+        lm = dict(t=spec["t"], x=R1(c.x), y=R1(c.y), a=round(spec.get("a", a), 3), name=nm)
+        if spec["t"] == "turm":
+            side = max(9.0, min(14.0, (L + Wd) / 2))
+            lm.update(w=R1(side), d=R1(side), h=spec["h"], s=spec["s"])
+        elif spec["t"] == "kirche":
+            # Turm an das westliche Ende
+            if math.cos(a) < 0:   # lokal +x zeigt nach Osten (Chor), Turm im Westen
+                a += math.pi
+            lm.update(a=round(math.atan2(math.sin(a), math.cos(a)), 3), L=R1(max(30, L)), W=R1(max(14, Wd)), tw=R1(min(12, max(9, Wd * 0.55))), h=spec["h"], th=spec["th"])
+        out.append(lm)
+    for lm in out:
+        lm.pop("name", None)
+    return out, square
 
 
 def lm_polys(lm):
@@ -136,7 +192,38 @@ def main():
 
     towns = {}
     for m in (RV, WG):
+        bm.SCALE, bm.BLOCK_INSET, bm.ROAD_EXTRA = m.get("scale", 1.15), m.get("inset", 1.6), m.get("road_extra", 2.0)
         towns[m["id"]] = bm.build(m, osm_dir, None)
+    # Ravensburger Wahrzeichen, Veitsburg-Hügel und blaue Basis (Marienplatz) aus OSM
+    rv_lms, mp = rv_landmarks(osm_dir)
+    LANDMARKS[:] = [lm for lm in LANDMARKS if lm["t"] == "basilika"] + rv_lms
+    vb = next((lm for lm in rv_lms if lm["t"] == "veitsburg"), None)
+    if vb:
+        HILLS[1] = (vb["x"] + 9, vb["y"] + 6, 30.0, 92.0, 2.4)
+    if mp is not None:
+        BASES[1] = (mp.x, mp.y)
+    print("Wahrzeichen RV:", [(lm["t"], lm.get("s", ""), lm["x"], lm["y"]) for lm in rv_lms], "Marienplatz:", BASES[1], file=sys.stderr)
+    # Hauptrouten an die (neu skalierten) Ravensburger Straßen anschließen
+    rvx, rvy = OFF["ravensburg"]
+    rv_lines = [LineString([(x + rvx, y + rvy) for x, y in zip(r["p"][0::2], r["p"][1::2])]) for r in towns["ravensburg"]["roads"] if r["k"] <= 1 and len(r["p"]) >= 4]
+    rv_rect = box(rvx, rvy, rvx + towns["ravensburg"]["w"], rvy + towns["ravensburg"]["h"])
+    connectors = []
+    for ri, (name, w, k, pts) in enumerate(ROUTES):
+        pts = list(pts)
+        for end in (0, -1):
+            e = Point(pts[end])
+            if rv_rect.distance(e) > 40:
+                continue
+            best = min(rv_lines, key=lambda l: l.distance(e))
+            q = best.interpolate(best.project(e))
+            if 2 < e.distance(q) < 110:
+                connectors.append(LineString([(e.x, e.y), (q.x, q.y)]).buffer(w / 2 + 2))
+                if end == 0:
+                    pts.insert(0, (q.x, q.y))
+                else:
+                    pts.append((q.x, q.y))
+        ROUTES[ri] = (name, w, k, pts)
+    connect_area = unary_union(connectors) if connectors else None
     W = R1(max(OFF["ravensburg"][0] + towns["ravensburg"]["w"], OFF["weingarten"][0] + towns["weingarten"]["w"]))
     H = R1(max(OFF["ravensburg"][1] + towns["ravensburg"]["h"], OFF["weingarten"][1] + towns["weingarten"]["h"]))
     world = box(0, 0, W, H)
@@ -151,6 +238,8 @@ def main():
             poly = Polygon(list(zip(p[0::2], p[1::2])))
             if poly.is_valid and poly.intersects(lm_union):
                 continue      # wird durch Wahrzeichen ersetzt
+            if connect_area is not None and poly.is_valid and poly.intersects(connect_area):
+                continue      # Anschluss der Hauptroute frei halten
             buildings.append({**b, "p": p})
         for r in d["roads"]:
             if r["k"] == 2:

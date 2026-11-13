@@ -540,7 +540,8 @@ class World {
     const rs = hash32(tx * 92821 + ty * 68917);
     const cob = cobblePattern(g, false), cob2 = cobblePattern(g, true);
     if (cob) { g.fillStyle = cob; g.fillRect(Math.max(0, x0), Math.max(0, y0), Math.min(this.w, x1) - Math.max(0, x0), Math.min(this.h, y1) - Math.max(0, y0)); }
-    for (const a of this.areas) if (a.t === 'green' && vis(a.bb)) { g.fillStyle = COL.green; path(a.p, true); g.fill(); }
+    const grass = grassPattern(g);
+    for (const a of this.areas) if (a.t === 'green' && vis(a.bb)) { g.fillStyle = COL.green; path(a.p, true); g.fill(); if (grass) { g.fillStyle = grass; g.fill(); } }
     for (const a of this.areas) if (a.t === 'sand' && vis(a.bb)) { g.fillStyle = COL.sand; path(a.p, true); g.fill(); }
     for (const a of this.areas) if (a.t === 'paved' && vis(a.bb)) {
       g.fillStyle = COL.paved; path(a.p, true); g.fill();
@@ -717,6 +718,23 @@ function roofZ(b, x, y) {
   return b.top + f.rise * m;
 }
 
+// Gras: feine helle/dunkle Halme und Flecken (4 m Kachel)
+let _grass = null;
+function grassPattern(g) {
+  if (!_grass) {
+    const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+    let h = 12345; const r = () => ((h = (h * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    for (let i = 0; i < 9; i++) { const gx = r() * 128, gy = r() * 128, rr = 20 + r() * 30, gr = x.createRadialGradient(gx, gy, 0, gx, gy, rr); gr.addColorStop(0, r() < 0.5 ? 'rgba(30,60,10,0.10)' : 'rgba(190,220,120,0.08)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = gr; x.fillRect(0, 0, 128, 128); }
+    for (let i = 0; i < 900; i++) { x.strokeStyle = r() < 0.5 ? 'rgba(25,55,15,0.18)' : 'rgba(170,210,110,0.16)'; x.lineWidth = 1; const px = r() * 128, py = r() * 128; x.beginPath(); x.moveTo(px, py); x.lineTo(px + (r() - 0.5) * 2, py - 2 - r() * 3); x.stroke(); }
+    _grass = c;
+  }
+  try {
+    const pt = g.createPattern(_grass, 'repeat');
+    if (!pt || !pt.setTransform || typeof DOMMatrix === 'undefined') return null;
+    pt.setTransform(new DOMMatrix().scale(4 / 128));
+    return pt;
+  } catch (e) { return null; }
+}
 // Kopfsteinpflaster-Muster (gecacht); fan = Fächerpflaster für Plätze
 const _cob = {};
 function cobblePattern(g, fan) {
