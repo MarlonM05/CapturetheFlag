@@ -1262,27 +1262,6 @@ class Renderer3D {
     const m = this.cars.get(c);
     if (m) { this.scene.remove(m.root); this.cars.delete(c); }
   }
-  // Zielhilfe: Gegner nahe am Fadenkreuz-Strahl (Winkel), in Reichweite und mit freier Schusslinie
-  aimAssist(sx, sy, c, range, cone = 0.11) {
-    const ndc = new THREE.Vector2(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1);
-    this.ray.setFromCamera(ndc, this.camera);
-    const o = this.ray.ray.origin, d = this.ray.ray.direction, W = this.game.world;
-    let best = null, bestA = cone;
-    for (const q of this.game.cars) {
-      if (!q.alive || q === c || q.team === c.team || q.protect > 0) continue;
-      const hd = Math.hypot(q.x - c.x, q.y - c.y);
-      if (hd > range) continue;
-      const vx = q.x - o.x, vy = q.z + 0.9 - o.y, vz = q.y - o.z, l = Math.hypot(vx, vy, vz) || 1;
-      const ang = Math.acos(Math.max(-1, Math.min(1, (vx * d.x + vy * d.y + vz * d.z) / l)));
-      if (ang >= bestA) continue;
-      // freie Schusslinie vom Turm zum Ziel (keine Hilfe durch Wände)
-      let free = true; const n = Math.ceil(hd / 3), z0 = c.z + 1.1, z1 = q.z + 0.9;
-      for (let k = 1; k < n && free; k++) { const t = k / n; if (W.solidAt(c.x + (q.x - c.x) * t, c.y + (q.y - c.y) * t, z0 + (z1 - z0) * t)) free = false; }
-      if (free) { best = q; bestA = ang; }
-    }
-    return best;
-  }
-
   // ---------------- Bild zeichnen ----------------
   render(dt, time) {
     const G = this.game;

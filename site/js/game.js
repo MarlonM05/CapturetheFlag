@@ -583,15 +583,6 @@ class Game {
       const dz = ap.z - (c.z + 1.1), hd = Math.max(1, Math.hypot(ap.x - c.x, ap.y - c.y));
       inp.pitch = ap.kind === 'ground' && Math.abs(dz) < 2.5 ? 0 : clamp(Math.atan2(dz, hd), -0.6, 0.9);
       this.aimLock = ap.car || null;
-      // leichte Zielhilfe: Gegner nahe am Fadenkreuz wird anvisiert, mit Vorhalt für fahrende Ziele
-      const t = this.r3d.aimAssist(cr.x, cr.y, c, c.range * 0.95, this.opts.autoAim ? 0.2 : 0.11) || (ap.car && ap.car.alive ? ap.car : null);
-      if (t) {
-        const dist = Math.hypot(t.x - c.x, t.y - c.y), tt = dist / c.w.speed;
-        inp.aim = Math.atan2(t.y + t.vy * tt * 0.85 - c.y, t.x + t.vx * tt * 0.85 - c.x);
-        const tz = (t.z + 0.9 + (t.onGround === false ? (t.vz || 0) * tt * 0.5 : 0)) - (c.z + 1.1);
-        inp.pitch = Math.abs(tz) > 1.6 ? clamp(Math.atan2(tz, Math.max(1, dist)), -0.6, 0.9) : 0;
-        this.aimLock = t;
-      }
     } else if (Input.mouse.moved && this.r3d) {
       // Strahl durch das Fadenkreuz: trifft Auto, Hauswand, Boden oder Himmel -> Seiten- und Höhenwinkel
       const ap = this.r3d.aimPoint(Input.mouse.x, Input.mouse.y, c);
