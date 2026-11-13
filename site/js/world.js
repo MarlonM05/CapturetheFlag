@@ -20,7 +20,8 @@ const COL = {
   stream: '#3f86c9',
 };
 const ROOF = ['#b5533c', '#8e3b2e', '#c96a3f', '#5f9e8a', '#7d8188', '#c9b48a', '#5b6068'];
-const WALL = ['#f1e4c8', '#f3d9a4', '#e9c3a0', '#f4efe6', '#cfdde3', '#efc9bb', '#e3e6c8', '#f2dcae', '#d9cfc0', '#f6e2d0', '#e8d6e2', '#d6e3cf'];
+// warme Pastelltöne wie in oberschwäbischen Altstädten (Ocker, Rosé, Salbei, Creme, Hellblau)
+const WALL = ['#f3dfae', '#efc79a', '#e8b8a6', '#f5ead2', '#cfe0d6', '#f2d4c4', '#e4d7a8', '#f7e7c1', '#d8e4ea', '#f4c7b0', '#e9d2dc', '#dfe8c4', '#f0dcb8', '#e6c8a8'];
 
 const TILE_PX = 512;       // Kachelgröße in Pixeln (Meter = TILE_PX / Zoom)
 const NAV = 2;             // Navigationsraster in Metern
@@ -121,7 +122,7 @@ class World {
     }
     this.labels = map.labels;
     this.bases = map.bases;
-    this.ramps = map.ramps.map(r => ({ ...r, len: 7, wid: 5 }));
+    this.ramps = map.ramps.map(r => ({ ...r, len: r.l || 7, wid: r.w || 5, big: !!r.b }));
     this.buildHash();
     this.buildNav();
     this.tiles = new Map();
@@ -599,7 +600,7 @@ class World {
       g.beginPath(); g.arc(t.x + 2.2, t.y + 2.6, t.r, 0, 7); g.fill();
     }
     // Rampen
-    if (!opts.flat3d) for (const r of this.ramps) if (vis([r.x - 6, r.y - 6, r.x + 6, r.y + 6])) drawRamp(g, r);
+    if (!opts.flat3d) for (const r of this.ramps) if (vis([r.x - 8, r.y - 8, r.x + 8, r.y + 8])) drawRamp(g, r);
     // Basen
     this.bases.forEach((b, i) => {
       if (!vis([b.x - 14, b.y - 14, b.x + 14, b.y + 14])) return;

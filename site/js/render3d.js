@@ -44,6 +44,18 @@ const R3 = {
   },
 };
 
+// Abgerundete Box (weiche Kanten statt Klötzchen-Look)
+function roundBox(w, h, d, r) {
+  const g = new THREE.BoxGeometry(w, h, d, 3, 3, 3), p = g.attributes.position, hx = w / 2 - r, hy = h / 2 - r, hz = d / 2 - r;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const cx = Math.max(-hx, Math.min(hx, x)), cy = Math.max(-hy, Math.min(hy, y)), cz = Math.max(-hz, Math.min(hz, z));
+    let dx = x - cx, dy = y - cy, dz = z - cz; const l = Math.hypot(dx, dy, dz) || 1;
+    p.setXYZ(i, cx + dx / l * r, cy + dy / l * r, cz + dz / l * r);
+  }
+  g.computeVertexNormals();
+  return g;
+}
 const CAR_H = { sport: 1.15, buggy: 1.3, tank: 1.55, jeep: 1.6, truck: 1.85 };
 
 class Renderer3D {
@@ -53,7 +65,7 @@ class Renderer3D {
     canvas.style.display = 'block';
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#a9cbe6');
-    this.scene.fog = new THREE.Fog('#a9cbe6', 170, 430);
+    this.scene.fog = new THREE.Fog('#b7d3ea', 150, 460);
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.5, 1800);
     this.pitch = 1.1;    // ~63° von oben – weniger Verdeckung durch Häuser
     this.camDist = 125;
@@ -77,7 +89,7 @@ class Renderer3D {
   // ---------------- Licht ----------------
   buildLights() {
     const s = this.scene;
-    s.add(new THREE.HemisphereLight('#f4f8ff', '#77705a', 0.68));
+    s.add(new THREE.HemisphereLight('#f6f9ff', '#8a7f62', 0.74));
     const sun = this.sun = new THREE.DirectionalLight('#fff3dc', 0.85);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -215,15 +227,32 @@ class Renderer3D {
       for (let y = 0; y < h; y += 32) for (let x = (y / 32) % 2 ? 16 : 0; x <= w; x += 32) { g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + 32); g.stroke(); }
       this.noise(g, w, h, 500, 'rgba(0,0,0,0.06)', 'rgba(255,255,255,0.08)');
     });
+    // zweite Fassade: Rundbogen-Fenster und Arkaden im Erdgeschoss
+    const arches = this.canvasTex(256, 256, (g, w, h) => {
+      g.fillStyle = '#f4f4f4'; g.fillRect(0, 0, w, h);
+      this.noise(g, w, h, 900, 'rgba(0,0,0,0.05)', 'rgba(255,255,255,0.08)');
+      const arch = (x, y, ww, hh, fill) => { g.beginPath(); g.moveTo(x, y + hh); g.lineTo(x, y + ww / 2); g.arc(x + ww / 2, y + ww / 2, ww / 2, Math.PI, 0); g.lineTo(x + ww, y + hh); g.closePath(); g.fillStyle = fill; g.fill(); };
+      g.fillStyle = 'rgba(0,0,0,0.10)'; g.fillRect(0, 124, w, 4);
+      for (let fx = 0; fx < 2; fx++) {
+        const x = fx * 128 + 36;
+        arch(x - 4, 22, 64, 74, '#d6d6d6');
+        const gr = g.createLinearGradient(x, 26, x + 56, 96); gr.addColorStop(0, '#5d6f80'); gr.addColorStop(1, '#2f3c4a');
+        arch(x, 26, 56, 70, gr);
+        g.fillStyle = '#d6d6d6'; g.fillRect(x + 26, 40, 4, 56);
+        arch(fx * 128 + 18, 150, 92, 106, '#cfcfcf'); arch(fx * 128 + 26, 160, 76, 96, '#3a3530');   // Arkadenbogen
+      }
+    });
     const dash = this.canvasTex(64, 16, (g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = '#f2f2ea'; g.fillRect(0, 0, w * 0.55, h); });
-    this.tex = { facade, roof, asphalt, sidewalk: pavers('#a6a296'), foot: pavers('#ada28c'), dash };
+    this.tex = { facade, arches, roof, asphalt, sidewalk: pavers('#a6a296'), foot: pavers('#ada28c'), dash };
     return this.tex;
   }
 
   // ---------------- Gebäude: Fassaden mit Fenstern, Ziegeldächer ----------------
   buildBuildings() {
     const T = this.makeTextures();
-    const wall = { pos: [], col: [], uv: [] }, roofB = { pos: [], col: [], uv: [] };
+    const wallA = { pos: [], col: [], uv: [] }, wallB = { pos: [], col: [], uv: [] }, roofB = { pos: [], col: [], uv: [] };
+    const towers = [];   // runde Ecktürme mit Kegeldach: [x, y, r, z0, h, Wandfarbe, Dachfarbe]
+    let bi = 0;
     const put = (B, v, c, u) => { B.pos.push(v[0], v[1], v[2]); B.col.push(c.r, c.g, c.b); B.uv.push(u[0], u[1]); };
     const tri = (B, a, b, c, col, ua, ub, uc) => { put(B, a, col, ua); put(B, b, col, ub); put(B, c, col, uc); };
     const FW = 6, FH = 6.4;  // Fassaden-Kachel in Metern
@@ -231,6 +260,8 @@ class Renderer3D {
       if (b.lm) continue;   // Wahrzeichen haben eigene Modelle
       const p = b.p, n = p.length / 2, h = b.top, z0 = b.base;
       const wc = R3.col(b.wall), rc = R3.col(b.roof);
+      const hsh = (bi++ * 2654435761) >>> 0;
+      const wall = b.c !== 4 && hsh % 10 < 3 ? wallB : wallA;
       // Wände
       let run = 0;
       for (let i = 0; i < n; i++) {
@@ -260,6 +291,14 @@ class Renderer3D {
         const gv = (h - z0) / FH, gt = (rh - z0) / FH;
         tri(wall, q(p3), q(p0), r0, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
         tri(wall, q(p1), q(p2), r1, wc, [0.02, gv], [0.03, gv], [0.025, Math.min(gt, gv + 0.12)]);
+        // manche Eckhäuser bekommen einen runden Turm mit spitzem Kegeldach
+        const sh = Math.min(len(0), len(1));
+        if (hsh % 9 === 0 && sh > 9 && h - z0 > 7) {
+          const tr = Math.min(3.2, sh * 0.28), c0 = p0, ex = [p1[0] - p0[0], p1[1] - p0[1]], ey = [p3[0] - p0[0], p3[1] - p0[1]];
+          const lx = Math.hypot(ex[0], ex[1]), ly = Math.hypot(ey[0], ey[1]);
+          const tx = c0[0] + ex[0] / lx * tr * 1.05 + ey[0] / ly * tr * 1.05, ty = c0[1] + ex[1] / lx * tr * 1.05 + ey[1] / ly * tr * 1.05;
+          towers.push([tx, ty, tr, z0, h - z0 + rise + 1.5, wc, rc]);
+        }
       } else if (!b.flat && n <= 10 && this.convex(p)) {
         let A = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; A += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1]; }
         const rh = h + Math.min(4, Math.sqrt(Math.abs(A / 2)) * 0.22 + 1.2);
@@ -296,7 +335,18 @@ class Renderer3D {
       m.castShadow = true; m.receiveShadow = true;
       this.scene.add(m);
     };
-    mk(wall, T.facade); mk(roofB, T.roof);
+    mk(wallA, T.facade); mk(wallB, T.arches); mk(roofB, T.roof);
+    if (towers.length) {
+      const cyl = new THREE.InstancedMesh(this.track(new THREE.CylinderGeometry(1, 1, 1, 16)), this.mat({ map: T.facade }), towers.length);
+      const cone = new THREE.InstancedMesh(this.track(new THREE.ConeGeometry(1.18, 1, 16)), this.mat({ map: T.roof }), towers.length);
+      const d = new THREE.Object3D();
+      towers.forEach(([x, y, r, z0, hh, wc, rc], i) => {
+        d.position.set(x, z0 + hh / 2, y); d.scale.set(r, hh, r); d.updateMatrix(); cyl.setMatrixAt(i, d.matrix); cyl.setColorAt(i, wc);
+        d.position.set(x, z0 + hh + r * 0.9, y); d.scale.set(r, r * 1.8, r); d.updateMatrix(); cone.setMatrixAt(i, d.matrix); cone.setColorAt(i, rc);
+      });
+      cyl.geometry.attributes.uv.array.forEach((v, i, a) => { if (i % 2 === 0) a[i] = v * 2; });
+      for (const m of [cyl, cone]) { m.castShadow = true; m.receiveShadow = true; this.scene.add(m); }
+    }
     this.buildRoads();
     this.buildDecks();
     this.buildRails();
@@ -349,7 +399,7 @@ class Renderer3D {
   }
   buildRoads() {
     const T = this.makeTextures(), W = this.game.world;
-    const L = { side: { pos: [], uv: [] }, foot: { pos: [], uv: [] }, asph: { pos: [], uv: [] }, curb: { pos: [], uv: [] }, line: { pos: [], uv: [] } };
+    const L = { side: { pos: [], uv: [] }, foot: { pos: [], uv: [] }, asph: { pos: [], uv: [] }, curb: { pos: [], uv: [] }, line: { pos: [], uv: [] }, edge: { pos: [], uv: [] } };
     const lamps = [];
     for (const r of W.roads) {
       if (r.k > 2) continue;
@@ -360,7 +410,8 @@ class Renderer3D {
       this.ribbon(L.asph, r.p, r.w, 0.07, 8);
       this.ribbon(L.curb, r.p, 0.3, 0.1, 2, r.w / 2 + 0.1);
       this.ribbon(L.curb, r.p, 0.3, 0.1, 2, -r.w / 2 - 0.1);
-      if (r.k === 0) this.ribbon(L.line, r.p, 0.22, 0.085, 6);
+      if (r.k === 0 || r.w >= 9) this.ribbon(L.line, r.p, 0.22, 0.085, 6);
+      if (r.k === 0) for (const sg of [1, -1]) this.ribbon(L.edge, r.p, 0.2, 0.085, 6, sg * (r.w / 2 - 0.7));
       // Laternen
       let acc = 12, side = 1;
       for (let i = 0; i + 3 < r.p.length; i += 2) {
@@ -391,6 +442,7 @@ class Renderer3D {
     mk(L.asph, this.mat(po({ map: T.asphalt }, -2)), 2);
     mk(L.curb, this.mat(po({ color: '#c9c5bc' }, -3)), 3);
     mk(L.line, this.mat(po({ map: T.dash, transparent: true, alphaTest: 0.3 }, -4)), 4);
+    mk(L.edge, this.mat(po({ color: '#ecebe2' }, -4)), 4);
     // Straßenlaternen
     if (lamps.length) {
       const pole = new THREE.InstancedMesh(this.track(new THREE.CylinderGeometry(0.09, 0.13, 5.5, 6)), this.mat({ color: '#3c4046' }), lamps.length);
@@ -601,7 +653,7 @@ class Renderer3D {
     const rampMat = this.mat({ map: rampTex });
     const sideMat = this.mat({ color: '#5a4a32' });
     for (const r of W.ramps) {
-      const L = r.len, Wd = r.wid, H = 1.5;
+      const L = r.len, Wd = r.wid, H = r.big ? 2.2 : 1.5;
       const g = this.track(new THREE.BufferGeometry());
       const v = [
         -L / 2, 0, -Wd / 2, L / 2, H, -Wd / 2, L / 2, H, Wd / 2, -L / 2, 0, -Wd / 2, L / 2, H, Wd / 2, -L / 2, 0, Wd / 2, // Schräge
@@ -704,7 +756,7 @@ class Renderer3D {
     const black = this.mat({ color: '#171717' });
     const glass = this.mat({ color: '#1c2a3a', specular: '#9fc7ff', shininess: 100 }, 'Phong');
     const metal = this.mat({ color: '#3a3f45', specular: '#888888', shininess: 50 }, 'Phong');
-    const box = (w, h, d, m, x, y, z) => { const o = new THREE.Mesh(this.track(new THREE.BoxGeometry(w, h, d)), m); o.position.set(x, y, z); o.castShadow = true; body.add(o); return o; };
+    const box = (w, h, d, m, x, y, z) => { const o = new THREE.Mesh(this.track(roundBox(w, h, d, Math.min(0.14, w * 0.3, h * 0.3, d * 0.3))), m); o.position.set(x, y, z); o.castShadow = true; body.add(o); return o; };
     const wheel = (r, w, x, z) => {
       const o = new THREE.Mesh(this.track(new THREE.CylinderGeometry(r, r, w, 14)), black);
       o.rotation.x = Math.PI / 2; o.position.set(x, r, z); o.castShadow = true; body.add(o); return o;
@@ -781,13 +833,18 @@ class Renderer3D {
     cloth.geometry.translate(1, 0, 0); cloth.position.y = 2.9; fl.add(cloth);
     fl.position.set(-L / 2 + 0.3, H, 0); fl.visible = false; root.add(fl);
     root.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
+    // Drehpunkt in der Wagenmitte: Saltos und Hangneigung drehen um den Schwerpunkt statt um die Räder
+    const spin = new THREE.Group(), inner = new THREE.Group();
+    spin.position.y = H * 0.5; inner.position.y = -H * 0.5;
+    for (const ch of [...root.children]) inner.add(ch);
+    spin.add(inner); root.add(spin);
     this.scene.add(root);
-    return { root, turret, face, ring, flag: fl, flagCloth: cloth, paint, flashOn: false, lastFlag: -2 };
+    return { root, spin, turret, face, ring, flag: fl, flagCloth: cloth, paint, flashOn: false, lastFlag: -2 };
   }
 
   // ---------------- Kamera / Projektion ----------------
   resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const dpr = Math.min(window.devicePixelRatio || 1, this.dprCap || 2);
     this.gl.setPixelRatio(dpr);
     this.gl.setSize(innerWidth, innerHeight, false);
     this.camera.aspect = innerWidth / innerHeight;
@@ -795,7 +852,7 @@ class Renderer3D {
     this.updatePointScale();
   }
   updatePointScale() {
-    const h = innerHeight * Math.min(window.devicePixelRatio || 1, 1.5);
+    const h = innerHeight * Math.min(window.devicePixelRatio || 1, this.dprCap || 2);
     this.pNormal.material.uniforms.scale.value = this.pAdd.material.uniforms.scale.value = h / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
   }
   placeCamera(cx, cy, cz, dt) {
@@ -862,6 +919,9 @@ class Renderer3D {
   // ---------------- Bild zeichnen ----------------
   render(dt, time) {
     const G = this.game;
+    // Bildrate im Blick: bei dauerhaft < 40 FPS die Auflösung stufenweise senken
+    this.slowT = Math.max(0, (this.slowT || 0) + (dt > 1 / 40 ? dt : -dt * 0.5));
+    if (this.slowT > 2.5 && (this.dprCap || 2) > 1 && (window.devicePixelRatio || 1) > 1) { this.dprCap = Math.max(1, (this.dprCap || 2) - 0.25); this.slowT = 0; this.resize(); }
     const sx = (Math.random() - 0.5) * G.shake * 0.9, sy = (Math.random() - 0.5) * G.shake * 0.9;
     const pz = G.player && G.player.alive ? G.player.z : G.world.terrain(G.cam.x, G.cam.y);
     this.placeCamera(G.cam.x + sx * (G.camMode === 'chase' ? 0.3 : 1), G.cam.y + sy * (G.camMode === 'chase' ? 0.3 : 1), G.camMode === 'chase' && G.player ? G.player.z : pz, dt);
@@ -886,10 +946,15 @@ class Renderer3D {
       m.root.rotation.y = -c.a;
       // am Hang kippen (Nicken + Rollen), in der Luft leicht nach Flugbahn
       const ca = Math.cos(c.a), sa = Math.sin(c.a), sxs = c.slopeX || 0, sys = c.slopeY || 0;
-      const pitch = c.onGround === false ? clamp(c.vz * 0.02, -0.3, 0.3) : Math.atan(sxs * ca + sys * sa);
-      const roll = c.onGround === false ? 0 : -Math.atan(-sxs * sa + sys * ca);
-      m.pitch = (m.pitch || 0) + (pitch - (m.pitch || 0)) * 0.25; m.roll = (m.roll || 0) + (roll - (m.roll || 0)) * 0.25;
-      m.root.rotation.z = m.pitch; m.root.rotation.x = m.roll;
+      const air = c.onGround === false || Math.abs(c.pitch || 0) > 0.05;
+      const roll = air ? 0 : -Math.atan(-sxs * sa + sys * ca);
+      if (air && Math.abs(c.pitch || 0) > 0.05) m.pitch = clamp(c.vz * 0.02, -0.3, 0.3) + c.pitch;   // Salto: direkt folgen
+      else {
+        const pitch = air ? clamp(c.vz * 0.02, -0.3, 0.3) : Math.atan(sxs * ca + sys * sa);
+        m.pitch = angNorm(m.pitch || 0); m.pitch += (pitch - m.pitch) * 0.25;
+      }
+      m.roll = (m.roll || 0) + (roll - (m.roll || 0)) * 0.25;
+      m.spin.rotation.order = 'XZY'; m.spin.rotation.z = m.pitch; m.spin.rotation.x = m.roll;
       m.turret.rotation.y = -(c.turret - c.a);
       // Gesicht immer „aufrecht“ zur Kamera
       m.face.rotation.y = c.a - Math.PI / 2 - (G.camMode === 'chase' ? G.camYaw : -Math.PI / 2);

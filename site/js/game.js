@@ -561,6 +561,7 @@ class Game {
     c.airLock = Math.max(0, (c.airLock || 0) - dt);
     const onGround = c.airLock <= 0 && c.z <= c.groundZ + 0.1 && c.vz <= surfVz + 0.8;
     if (!c.onGround && onGround) {
+      if (c.airT > 0.25 && (c.pitch || c.flipAcc)) this.landFlip(c);
       if (c.airT > 0.35) {
         Sound.play('land', this.vol(c.x, c.y));
         for (let i = 0; i < 8; i++) this.particles.add({ x: c.x + rand(-1.5, 1.5), y: c.y + rand(-1.5, 1.5), vx: rand(-4, 4), vy: rand(-4, 4), life: 0.6, max: 0.6, size: 0.8, grow: 2.5, color: '#bdb5a5', alpha: 0.5, drag: 3 });
@@ -569,12 +570,13 @@ class Game {
     }
     c.onGround = onGround;
     if (!onGround) c.airT += dt;
+    else if (c.pitch) { c.pitch = 0; c.pitchV = 0; c.flipAcc = 0; }
     // Hangabtrieb: bergauf langsamer, bergab schneller
     if (onGround) { c.vx -= GRAV * 0.6 * sx * dt; c.vy -= GRAV * 0.6 * sy * dt; }
     const fx = Math.cos(c.a), fy = Math.sin(c.a);
     let vF = c.vx * fx + c.vy * fy, vL = -c.vx * fy + c.vy * fx;
     // Turbo
-    c.boosting = playing && inp.boost && c.boost > 0.02 && thr >= 0;
+    c.boosting = playing && inp.boost && c.boost > 0.02 && (thr >= 0 || !onGround);
     if (c.boosting) { c.boost = Math.max(0, c.boost - dt); }
     else c.boost = Math.min(st.boost, c.boost + st.boostRegen * dt);
     const wz = W.waterAt(c.x, c.y);
@@ -616,6 +618,16 @@ class Game {
       else c.lastSkid = null;
     } else {
       c.drifting = false;
+      // Saltos: W/S + Nitro dreht nach vorne/hinten, W/S allein neigt nur leicht; kurz vor dem Boden richtet sich das Auto auf
+      const hgt = c.z - c.groundZ, nearGround = hgt < 3.5 && c.vz < 0;
+      const up = Math.round((c.pitch || 0) / (Math.PI * 2)) * Math.PI * 2;
+      let wantV;
+      const pt = c.bot ? 0 : thr;   // Bots fliegen gerade
+      if (c.boosting && pt !== 0 && !nearGround) wantV = -pt * 7.2;
+      else { const tgt = (nearGround ? up : up - pt * 0.35); wantV = clamp((tgt - (c.pitch || 0)) * (nearGround ? 6 : 4), -5.5, 5.5); }
+      c.pitchV = (c.pitchV || 0) + (wantV - (c.pitchV || 0)) * Math.min(1, dt * 7);
+      c.pitch = (c.pitch || 0) + c.pitchV * dt;
+      c.flipAcc = (c.flipAcc || 0) + c.pitchV * dt;
       c.a += steer * st.turn * (c.boosting ? 0.75 : 0.35) * dt;
       c.lastSkid = null;
       if (c.boosting) {
@@ -633,16 +645,19 @@ class Game {
     if (onGround && c.groundKind !== 'roof' && c.rampCd <= 0) {
       for (const r of W.ramps) {
         const dx = c.x - r.x, dy = c.y - r.y;
-        if (dx * dx + dy * dy > 30) continue;
+        if (dx * dx + dy * dy > (r.len * r.len + r.wid * r.wid) / 4 + 4) continue;
         const ca = Math.cos(r.a), sa = Math.sin(r.a);
         const u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
         if (Math.abs(u) < r.len / 2 && Math.abs(v) < r.wid / 2 + 0.5) {
           const along = c.vx * ca + c.vy * sa;
-          if (along > 4) {
-            c.vz = Math.max(0, surfVz) + clamp(4.5 + along * 0.32, 7, 15.5); c.rampCd = 0.8; c.onGround = false; c.z = Math.max(c.z, c.groundZ + 0.4);
-            // auf Rampenrichtung ausrichten, damit man nicht seitlich abprallt
-            const sp2 = Math.hypot(c.vx, c.vy);
-            c.vx = c.vx * 0.5 + ca * sp2 * 0.5; c.vy = c.vy * 0.5 + sa * sp2 * 0.5;
+          // Bots nehmen Flussschanzen nur gerade (sonst fahren sie drüber)
+          if (along > 4 && !(r.big && c.bot && along < 0.85 * Math.hypot(c.vx, c.vy))) {
+            c.vz = Math.max(0, surfVz) + clamp(4.5 + (r.big ? Math.max(along, 30) : along) * 0.32, 7, 15.5) + (r.big ? 1.5 : 0); c.rampCd = 0.8; c.onGround = false; c.z = Math.max(c.z, c.groundZ + 0.4);
+            // auf Rampenrichtung ausrichten, damit man nicht seitlich abprallt; Flussschanzen geben Mindesttempo
+            const sp2 = r.big ? Math.max(Math.hypot(c.vx, c.vy), 30) : Math.hypot(c.vx, c.vy);
+            const al = r.big ? 1 : 0.5;   // Flussschanzen schicken immer quer über den Fluss
+            c.vx = c.vx * (1 - al) + ca * sp2 * al; c.vy = c.vy * (1 - al) + sa * sp2 * al;
+            if (r.big) c.a = r.a;
             Sound.play('jump', this.vol(c.x, c.y));
             if (c.isPlayer) this.say('Sprung!', '#ffe66d', 0.7, false);
           }
@@ -704,6 +719,7 @@ class Game {
     // Landen / an der Oberfläche bleiben (über scharfe Kuppen hebt das Auto ab)
     const g2 = W.groundAt(c.x, c.y, c.z);
     if (c.z < g2) {
+      if (c.airT > 0.25 && (c.pitch || c.flipAcc)) this.landFlip(c);
       c.z = g2;
       const [s2x, s2y] = W.groundKind === 'roof' ? [0, 0] : W.slopeAt(c.x, c.y, c.z);
       const sv = s2x * c.vx + s2y * c.vy;
@@ -731,6 +747,23 @@ class Game {
     }
     this.dropMine(c, dt, playing);
   }
+  // Landung nach Sprung: Saltos zählen, schiefe Landung bremst und kostet etwas Panzerung
+  landFlip(c) {
+    const off = angNorm(c.pitch || 0), flips = Math.floor((Math.abs(c.flipAcc || 0) + 0.6) / (Math.PI * 2));
+    if (Math.abs(off) > 1.0) {
+      c.vx *= 0.35; c.vy *= 0.35;
+      if (this.isClient && c === this.player) c.crashAcc += c.st.hp * 0.12;
+      else this.damage(c, c.st.hp * 0.12, null, 'crash');
+      Sound.play('clank', this.vol(c.x, c.y));
+      if (c.isPlayer) { this.say('Bruchlandung!', '#ff8c7f', 1, false); this.shake = Math.min(1, this.shake + 0.5); }
+    } else if (flips > 0) {
+      const n = Math.min(flips, 3), txt = (c.flipAcc > 0 ? 'Rückwärtssalto' : 'Salto') + (n > 1 ? ' ×' + n : '') + '!';
+      if (c.isPlayer) { this.say(txt, '#ffe66d', 1.2, false); Sound.play('pickup'); }
+      if (this.isClient && c === this.player) { if (typeof Net !== 'undefined') Net.send({ t: 'flip', n }); }
+      else this.addXp(c, 25 * n);
+    }
+    c.pitch = 0; c.pitchV = 0; c.flipAcc = 0;
+  }
   dropMine(c, dt, playing) {
     c.mineCd = Math.max(0, c.mineCd - dt);
     if (c.mines < 3) { c.mineRegen += dt; if (c.mineRegen > 12) { c.mineRegen = 0; c.mines++; } }
@@ -752,7 +785,7 @@ class Game {
       if (Math.hypot(tx - c.x, ty - c.y) > 10) { c.x = tx; c.y = ty; }
       else { c.x += (tx - c.x) * k; c.y += (ty - c.y) * k; }
       c.z += (rs.z - c.z) * k; c.a += angNorm(rs.a - c.a) * k;
-      c.vx = rs.vx; c.vy = rs.vy; c.vz = rs.vz; c.boosting = rs.b;
+      c.vx = rs.vx; c.vy = rs.vy; c.vz = rs.vz; c.boosting = rs.b; c.pitch = rs.p;
       if (rs.cd > 0) { const d = rs.cd; rs.cd = 0; this.damage(c, d, null, 'crash'); }
       if (rs.w && c.alive) { Sound.play('splash', this.vol(c.x, c.y)); this.kill(c, c.lastAttacker && c.lastAttackT > performance.now() - 5000 ? c.lastAttacker : null, 'water'); return; }
     }
@@ -895,13 +928,14 @@ class Game {
       // Raketen: Zielsuche + Beschleunigung
       if (b.w.homing) {
         const sp = Math.hypot(b.vx, b.vy);
-        const nsp = Math.min(sp + b.w.accel * dt, 95);
+        const nsp = Math.min(sp + b.w.accel * dt, b.w.maxSpeed || 70);
         let ang = Math.atan2(b.vy, b.vx);
-        let best = null, bd = 45 * 45;
+        let best = null, bd = 32 * 32;
         for (const o of this.cars) {
-          if (!o.alive || o.team === b.team) continue;
+          // nur Ziele in einem schmalen Kegel vorne; wer springt oder fliegt, ist schwer zu verfolgen
+          if (!o.alive || o.team === b.team || o.z - b.z > 2.5) continue;
           const dd = d2(b.x, b.y, o.x, o.y);
-          if (dd < bd && Math.abs(angNorm(Math.atan2(o.y - b.y, o.x - b.x) - ang)) < 0.8) { bd = dd; best = o; }
+          if (dd < bd && Math.abs(angNorm(Math.atan2(o.y - b.y, o.x - b.x) - ang)) < 0.35) { bd = dd; best = o; }
         }
         if (best) ang += clamp(angNorm(Math.atan2(best.y - b.y, best.x - b.x) - ang), -b.w.homing * dt, b.w.homing * dt);
         b.vx = Math.cos(ang) * nsp; b.vy = Math.sin(ang) * nsp;
@@ -1156,7 +1190,7 @@ class Game {
       t: 's', n: this.netSeq, st: this.state, tm: r1(this.time), ct: r2(this.countT), sc: this.score,
       c: this.cars.map(c => [c.id, r2(c.x), r2(c.y), r2(c.a), r2(c.turret), r2(c.z), r1(c.vx), r1(c.vy), Math.ceil(c.hp), c.alive ? 1 : 0, c.flag,
         c.boosting ? 1 : 0, c.protect > 0 ? 1 : 0, r1(c.respawnT), c.kills, c.deaths, c.caps, c.returns, c.score, c.earned, c.mines, r2(c.boost),
-        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg]),
+        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg, r2(c.pitch || 0)]),
       f: this.flags.map(f => [f.state, r1(f.x), r1(f.y), f.carrier ? f.carrier.id : 0, r1(f.dropT), r1(f.z)]),
       pr: this.props.map(p => (p.alive ? 1 : 0)).join(''),
       pk: this.pickups.map(p => [r1(p.x), r1(p.y), p.t, p.active ? 1 : 0]),
@@ -1171,6 +1205,7 @@ class Game {
     const c = this.cars.find(o => o.key === key);
     if (!c || !c.human) return;
     if (d.t === 'up') { this.applyUp(c, String(d.k)); return; }
+    if (d.t === 'flip') { this.addXp(c, 25 * clamp(+d.n || 0, 0, 3)); return; }
     if (d.t !== 'st') return;
     const num = (v, a, b) => { v = +v; return Number.isFinite(v) ? clamp(v, a, b) : 0; };
     const i = c.input;
@@ -1179,7 +1214,7 @@ class Game {
     const old = c.rs;
     c.rs = {
       x: num(d.x, 0, this.world.w), y: num(d.y, 0, this.world.h), a: num(d.a, -100, 100), vx: num(d.vx, -80, 80), vy: num(d.vy, -80, 80),
-      z: num(d.z, -20, 160), vz: num(d.vz, -80, 80), b: !!d.b, w: !!d.w || !!(old && old.w), cd: num(d.cd, 0, 200) + (old ? old.cd : 0), life: d.l, t: performance.now(),
+      z: num(d.z, -20, 160), vz: num(d.vz, -80, 80), p: num(d.p, -100, 100), b: !!d.b, w: !!d.w || !!(old && old.w), cd: num(d.cd, 0, 200) + (old ? old.cd : 0), life: d.l, t: performance.now(),
     };
   }
   // Spieler hat die Verbindung verloren -> Bot übernimmt
@@ -1201,7 +1236,7 @@ class Game {
     if (this.sendT % every === 0 && typeof Net !== 'undefined' && me.alive) {
       const i = me.input;
       Net.send({ t: 'st', l: me.life, x: r2(me.x), y: r2(me.y), a: r2(me.a), vx: r1(me.vx), vy: r1(me.vy), z: r2(me.z), vz: r1(me.vz),
-        tu: r2(i.aim), f: i.fire ? 1 : 0, m: i.mine ? 1 : 0, b: me.boosting ? 1 : 0, w: me.sunk ? 1 : 0, cd: r1(me.crashAcc) });
+        tu: r2(i.aim), f: i.fire ? 1 : 0, m: i.mine ? 1 : 0, b: me.boosting ? 1 : 0, w: me.sunk ? 1 : 0, cd: r1(me.crashAcc), p: r2(me.pitch || 0) });
       me.crashAcc = 0;
     }
     // eigenes Auto lokal vorhersagen
@@ -1280,7 +1315,7 @@ class Game {
       } else {
         c.net = { x: a[1], y: a[2], a: a[3], tu: a[4], z: a[5], vx: a[6], vy: a[7], t: now };
         if (!wasAlive && c.alive) { c.x = a[1]; c.y = a[2]; c.a = a[3]; c.turret = a[4]; c.z = a[5]; }
-        c.vx = a[6]; c.vy = a[7]; c.boosting = !!a[11];
+        c.vx = a[6]; c.vy = a[7]; c.boosting = !!a[11]; c.pitch = a[28] || 0;
       }
     }
     s.f.forEach((a, i) => { const f = this.flags[i]; f.state = a[0]; f.x = a[1]; f.y = a[2]; f.carrier = a[3] ? this.byId.get(a[3]) : null; f.dropT = a[4]; f.z = a[5] !== undefined ? a[5] : this.world.terrain(f.x, f.y); });
@@ -1413,7 +1448,7 @@ class Game {
       if (inp.thr > 0.3 && sp < 1.6 && this.state === 'play') { B.stuckT += dt; if (B.stuckT > 0.8) { B.stuckT = 0; B.revT = 0.7 + Math.random() * 0.4; B.revSteer = Math.random() < 0.5 ? -1 : 1; } }
       else B.stuckT = Math.max(0, B.stuckT - dt);
     }
-    inp.boost = (c.flag >= 0 || (wp.dist > 50 && B.role === 'attack') || B.chase) && Math.abs(da) < 0.25 && c.boost > c.st.boost * 0.3 && sp > 8;
+    inp.boost = c.onGround && (c.flag >= 0 || (wp.dist > 50 && B.role === 'attack') || B.chase) && Math.abs(da) < 0.25 && c.boost > c.st.boost * 0.3 && sp > 8;
     inp.jump = false;
     if (B.jumpT <= 0 && c.onGround) {
       if ((B.hurtT > 0 && Math.random() < 0.04 * (diff + 1)) || (B.stuckT > 0.5)) {

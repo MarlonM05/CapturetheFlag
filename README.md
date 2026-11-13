@@ -33,9 +33,11 @@ Hinweise:
 ## Spielmechanik (Motor-Wars-Stil)
 - **Fahrzeugklassen** (vor jedem Match frei wählbar, auch in der Online-Lobby):
   Schussen-Flitzer (ausgewogen, Doppel-MG) · Hornisse (schneller Buggy, Minigun, wenig Panzerung) ·
-  Mehlsack-Panzer (schwerer Truck, Kanone mit Nachladezeit) · Raketen-Rudi (Zielsuch-Raketen) · Allgäu-Bock (Springer, Schrotflinte).
+  Mehlsack-Panzer (schwerer Truck, Kanone mit Nachladezeit) · Raketen-Rudi (leicht lenkende Raketen – ausweichbar) · Allgäu-Bock (Springer, Schrotflinte).
 - **Drift:** `Q` + Lenken – Heck bricht aus, engere Kurven bei vollem Tempo.
 - **Sprung + Nitro:** `Leertaste` springt auch im Stand; `Shift` in der Luft gibt Schub und Auftrieb → gleiten/fliegen, solange das Nitro reicht.
+- **Saltos:** in der Luft `W`/`S` + `Shift` → Vorwärts-/Rückwärtssalto (360°). Kurz vor dem Boden richtet sich das Auto leicht auf; saubere Landung = +25 XP pro Salto, schiefe Landung bremst und kostet etwas Panzerung.
+- **Schussen-Schanzen:** breite gelbe Schanzen direkt vor dem Fluss (neben den Brücken) – mit Anlauf quer über das Wasser springen.
 - **XP im Match:** Abschuss 100, Assist 40, Flagge klauen 50, Rettung 60, Punkt 300. Alle 200 XP ein Upgrade für die laufende Runde:
   `1` Tempo (+7 %), `2` Panzerung (+15 %), `3` Waffe (+12 %), je max. 3 Stufen. Bots leveln mit.
 - **Karten:** 25 % größer, Häuserblöcke nach innen verkleinert → breitere Straßen; Bäume sind nur Deko; Rampen nur mit freier Anlauf- und Landebahn.

@@ -53,12 +53,12 @@ def shift(p, ox, oy):
 # Synthetische Straßen im Schussental (globale Koordinaten)
 # ---------------------------------------------------------------------------
 RIVER = [(-20, 880), (120, 868), (260, 878), (420, 862), (600, 874), (780, 860), (960, 876), (1120, 864), (1320, 872)]
-RIVER_W = 18.0
+RIVER_W = 24.0
 ROUTES = [
     # name, Breite, Klasse, Punkte
-    ("Schussentalstraße", 16, 0, [(194, 935), (214, 905), (236, 878), (252, 850), (270, 815), (296, 784), (318, 758), (333, 734)]),
-    ("B30", 16, 0, [(653, 945), (642, 912), (628, 880), (616, 850), (604, 818), (592, 790), (575, 762), (552, 746), (535, 738)]),
-    ("Querspange", 14, 0, [(296, 780), (400, 782), (500, 786), (593, 788), (690, 786), (800, 780), (900, 774), (983, 750)]),
+    ("Schussentalstraße", 18, 0, [(194, 935), (214, 905), (236, 878), (252, 850), (270, 815), (296, 784), (318, 758), (333, 734)]),
+    ("B30", 18, 0, [(653, 945), (642, 912), (628, 880), (616, 850), (604, 818), (592, 790), (575, 762), (552, 746), (535, 738)]),
+    ("Querspange", 16, 0, [(296, 780), (400, 782), (500, 786), (593, 788), (690, 786), (800, 780), (900, 774), (983, 750)]),
     ("Höhenweg", 12, 1, [(1052, 1094), (1090, 1096), (1125, 1098), (1165, 1100), (1205, 1080), (1236, 1040), (1240, 990), (1222, 950), (1190, 925), (1170, 912)]),
     ("Tunnelstraße", 14, 0, [(1052, 1283), (1100, 1290), (1140, 1290), (1165, 1270), (1165, 1220), (1165, 1100), (1165, 980), (1166, 930), (1170, 900), (1172, 870), (1175, 830), (1177, 790), (1178, 745)]),
     ("Martinsberg-Höhe", 11, 1, [(280, 249), (220, 250), (160, 275), (120, 330), (105, 400), (110, 470), (135, 540), (170, 590)]),
@@ -141,6 +141,8 @@ def main():
                 continue      # wird durch Wahrzeichen ersetzt
             buildings.append({**b, "p": p})
         for r in d["roads"]:
+            if r["k"] == 2:
+                continue          # Fußwege/Gassen weglassen – nur klare Straßen
             roads.append({**r, "p": shift(r["p"], ox, oy)})
         for a in d["areas"]:
             areas.append({**a, "p": shift(a["p"], ox, oy)})
@@ -192,7 +194,7 @@ def main():
 
     # Flussbett
     rd, _ = seg_dist(RIVER)
-    hz -= 3.6 * np.exp(-(rd / 10.0) ** 2)
+    hz -= 3.8 * np.exp(-(rd / 14.0) ** 4)      # breites Flussbett mit flachem Grund, gut sichtbar
     water_z = lambda x, y: sample(base, x, y) - 1.7
     river_poly = LineString(RIVER).buffer(RIVER_W / 2, cap_style=2).intersection(world)
     river_out = []
@@ -221,7 +223,7 @@ def main():
         inter = line.intersection(river_line)
         for g in (inter.geoms if hasattr(inter, "geoms") else [inter]):
             if isinstance(g, Point) and name not in ("Westflanke", "Westflanke Süd"):
-                add_bridge(pts, (g.x, g.y), 15.0, 32.0, 3.6, w)
+                add_bridge(pts, (g.x, g.y), 18.0, 32.0, 3.6, w)
     # Überführung: Querspange über die B30
     q = dict((n, p) for n, _, _, p in ROUTES)
     cross = LineString(q["Querspange"]).intersection(LineString(q["B30"]))
@@ -300,6 +302,31 @@ def main():
             roads.append(dict(w=float(w), k=k, p=flat([(p.x, p.y) for p in seg]), n=name))
     for dk in decks:
         dk.pop("s"); dk.pop("route")
+
+    # ---- Sackgassen-Stummel entfernen: nur Straßen, die an beiden Enden irgendwo anschließen ----
+    def prune(roads):
+        for _ in range(4):
+            lines = [LineString(list(zip(r["p"][0::2], r["p"][1::2]))) for r in roads]
+            keep = []
+            for i, r in enumerate(roads):
+                if r["k"] != 1 or r.get("n") in [n for n, *_ in ROUTES]:
+                    keep.append(r); continue
+                ln = lines[i]
+                dead = 0
+                for e in (Point(ln.coords[0]), Point(ln.coords[-1])):
+                    near = any(j != i and roads[j]["k"] <= 1 and lines[j].distance(e) < roads[j]["w"] / 2 + 2.5 for j in range(len(roads)))
+                    edge = e.x < 8 or e.y < 8 or e.x > W - 8 or e.y > H - 8
+                    dead += 0 if (near or edge) else 1
+                if dead and ln.length < (160 if dead == 2 else 75):
+                    continue
+                keep.append(r)
+            if len(keep) == len(roads):
+                break
+            roads = keep
+        return roads
+    n0 = len(roads)
+    roads[:] = prune(roads)
+    print("Sackgassen entfernt:", n0 - len(roads), file=sys.stderr)
 
     # ---- Bodenflächen im Tal ----
     town_rects = [box(OFF[t][0], OFF[t][1], OFF[t][0] + towns[t]["w"], OFF[t][1] + towns[t]["h"]) for t in towns]
@@ -381,11 +408,39 @@ def main():
             return False
         return all(math.hypot(x - ox, y - oy) >= mind for ox, oy in occupied)
 
-    ramps = [dict(x=R1(x), y=R1(y), a=round(a, 3)) for x, y, a in JUMP_RAMPS]
+    ramps = []
+    # Breite Sprungschanzen direkt vor dem Ufer (neben den Brücken und auf den Wiesen), Blick quer über die Schussen
+    rl = LineString(RIVER)
+    bridge_x = [ (dk["p"][0] + dk["p"][3]) / 2 for dk in decks if abs((dk["p"][1] + dk["p"][4]) / 2 - 870) < 40]
+    spots = sorted(set([bx + o for bx in bridge_x for o in (-34, 34)] + [100, 800]))
+    for sx in spots:
+        s = rl.project(Point(sx, 870))
+        P0, P1 = rl.interpolate(max(0, s - 2)), rl.interpolate(s + 2)
+        tx, ty = P1.x - P0.x, P1.y - P0.y; L = math.hypot(tx, ty) or 1
+        nxx, nyy = -ty / L, tx / L
+        c = rl.interpolate(s)
+        for sgn in (1, -1):
+            off = RIVER_W / 2 + 9.5
+            x, y = c.x + nxx * off * sgn, c.y + nyy * off * sgn
+            a = math.atan2(-nyy * sgn, -nxx * sgn)   # Richtung zum Fluss
+            ix, iy = int(x / C), int(y / C)
+            if not (0 <= ix < gw and 0 <= iy < gh) or clear[iy, ix] < 5.5:
+                continue
+            if any(math.hypot(x - dk["p"][0], y - dk["p"][1]) < 22 or math.hypot(x - dk["p"][3], y - dk["p"][4]) < 22 for dk in decks):
+                continue
+            ok = True
+            for dd in range(-30, -4, 3):      # Anlauf frei und eben
+                px, py = int((x + math.cos(a) * dd) / C), int((y + math.sin(a) * dd) / C)
+                if not (0 <= px < gw and 0 <= py < gh) or clear[py, px] < 4.0:
+                    ok = False; break
+            if ok:
+                ramps.append(dict(x=R1(x), y=R1(y), a=round(a, 3), l=9, w=10, b=1))
+                occupied.append((x, y))
+    print("Flussschanzen:", len(ramps), file=sys.stderr)
     cand = [r for r in roads if r["k"] <= 1]
     rnd.shuffle(cand)
     for rd_ in cand:
-        if len(ramps) >= 16:
+        if len(ramps) >= 26:
             break
         pts = list(zip(rd_["p"][0::2], rd_["p"][1::2]))
         for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
@@ -396,7 +451,7 @@ def main():
             ix, iy = int(cx / C), int(cy / C)
             if not (0 <= ix < gw and 0 <= iy < gh) or not main_c[iy, ix] or clear[iy, ix] < 6.5 or not far_ok(cx, cy, 80):
                 continue
-            if any(math.hypot(cx - dk["p"][0], cy - dk["p"][1]) < 60 for dk in decks):
+            if any(math.hypot(cx - dk["p"][0], cy - dk["p"][1]) < 60 for dk in decks) or rl.distance(Point(cx, cy)) < 90:
                 continue
             a0 = math.atan2(y2 - y1, x2 - x1)
 
