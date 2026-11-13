@@ -1348,9 +1348,14 @@ class Renderer3D {
   placeCamera(cx, cy, cz, dt) {
     const G = this.game, cam = this.camera;
     if (G.camMode === 'chase') {
-      // Drohne: knapp hinter und über dem Auto, steigt über Häuser im Weg
+      // Drohne: knapp hinter und über dem Auto, steigt über Häuser im Weg. Blickpunkt weich nachgeführt (kein Zittern)
+      const dts = dt || 0.016, kxy = 1 - Math.exp(-dts * 18), kz = 1 - Math.exp(-dts * 6);
+      if (!this.camF || Math.hypot(this.camF.x - cx, this.camF.y - cy) > 25 || Math.abs(this.camF.z - cz) > 12) this.camF = { x: cx, y: cy, z: cz };
+      else { this.camF.x += (cx - this.camF.x) * kxy; this.camF.y += (cy - this.camF.y) * kxy; this.camF.z += (cz - this.camF.z) * kz; }
+      cx = this.camF.x; cy = this.camF.y; cz = this.camF.z;
       const yaw = G.viewYaw ?? G.camYaw, fx = Math.cos(yaw), fy = Math.sin(yaw), lp = G.lookPitch || 0;
-      const back = 12.5 / G.zoomMul, up = Math.max(1.6, (5.2 - lp * 4) / G.zoomMul);
+      // nach oben schauen: Kamera tiefer und etwas näher, nach unten: höher
+      const back = 12.5 / G.zoomMul * (1 - 0.25 * Math.max(0, lp) / 1.55), up = Math.max(1.4, (5.2 - Math.max(0, lp) * 2.4 - Math.min(0, lp) * 4) / G.zoomMul);
       const Wd = G.world;
       let need = cz + up;
       // im Tunnel / unter einer Brücke: unter der Decke bleiben und näher ran
@@ -1375,7 +1380,10 @@ class Renderer3D {
       this.camH = this.camH == null ? need : this.camH + (need - this.camH) * Math.min(1, (dt || 0.016) * (need > this.camH ? 6 : 2.5));
       if (tunCap !== null && this.camH > tunCap) this.camH = tunCap;   // im Tunnel nie über der Decke
       cam.position.set(cx - fx * bk, this.camH, cy - fy * bk);
-      cam.lookAt(cx + fx * 10, cz + 1.4 + lp * 12, cy + fy * 10);
+      // Blickrichtung: Grundneigung aufs Auto + Maus-Neigung, bis fast senkrecht nach oben
+      const basePitch = Math.atan2(cz + 1.4 - this.camH, bk + 10);
+      cam.rotation.order = 'YXZ';
+      cam.rotation.set(clamp(basePitch + lp, -1.3, 1.32), -Math.PI / 2 - yaw, 0);
       if (cam.fov !== 68) { cam.fov = 68; cam.updateProjectionMatrix(); this.updatePointScale(); }
       cam.updateMatrixWorld();
       const ax = cx + fx * 45, ay = cy + fy * 45;
@@ -1454,7 +1462,9 @@ class Renderer3D {
     // Bildrate im Blick: bei dauerhaft < 40 FPS die Auflösung stufenweise senken
     this.slowT = Math.max(0, (this.slowT || 0) + (dt > 1 / 40 ? dt : -dt * 0.5));
     if (this.slowT > 2.5 && (this.dprCap || 2) > 1 && (window.devicePixelRatio || 1) > 1) { this.dprCap = Math.max(1, (this.dprCap || 2) - 0.25); this.slowT = 0; this.resize(); }
-    const sx = (Math.random() - 0.5) * G.shake * 0.9, sy = (Math.random() - 0.5) * G.shake * 0.9;
+    const chaseCam = G.camMode === 'chase';
+    const sx = chaseCam ? Math.sin(time * 29) * G.shake * 0.12 : (Math.random() - 0.5) * G.shake * 0.9;
+    const sy = chaseCam ? Math.cos(time * 23) * G.shake * 0.12 : (Math.random() - 0.5) * G.shake * 0.9;
     const pz = G.player && G.player.alive ? G.player.z : G.world.terrain(G.cam.x, G.cam.y);
     this.placeCamera(G.cam.x + sx * (G.camMode === 'chase' ? 0.3 : 1), G.cam.y + sy * (G.camMode === 'chase' ? 0.3 : 1), G.camMode === 'chase' && G.player ? G.player.z : pz, dt);
     // sichtbarer Bereich (für Minikarte)

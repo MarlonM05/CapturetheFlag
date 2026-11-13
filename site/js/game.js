@@ -504,15 +504,20 @@ class Game {
     if (this.camMode === 'chase') {
       if (p.alive) {
         const vF = p.vx * Math.cos(p.a) + p.vy * Math.sin(p.a);
-        if (vF > -3) this.camYaw += angNorm(p.a - this.camYaw) * (1 - Math.exp(-dt * 3.2));
+        if (vF > -3) this.camYaw += angNorm(p.a - this.camYaw) * (1 - Math.exp(-dt * 2.0));   // sanft hinterherschwenken
         this.cam.x = p.x; this.cam.y = p.y;
         if (!this.demo) {
           const M = Input.mouse;
           if (M.dx || M.dy) {
-            this.lookYaw = angNorm((this.lookYaw || 0) + M.dx * 0.0032);   // volle 360° Rundumsicht
-            this.lookPitch = clamp((this.lookPitch || 0) - M.dy * 0.0024, -0.35, 0.65);
+            // Zielwerte: volle 360° Rundumsicht, nach oben fast senkrecht
+            this.lookYawT = angNorm((this.lookYawT ?? this.lookYaw ?? 0) + M.dx * 0.0032);
+            this.lookPitchT = clamp((this.lookPitchT ?? this.lookPitch ?? 0) - M.dy * 0.0024, -0.45, 1.55);
             this.lookIdle = 0; M.dx = 0; M.dy = 0;
           } else this.lookIdle = (this.lookIdle || 0) + dt;
+          // weich nachführen statt ruckartig
+          const kL = 1 - Math.exp(-dt * 16);
+          if (this.lookYawT !== undefined) this.lookYaw = angNorm((this.lookYaw || 0) + angNorm(this.lookYawT - (this.lookYaw || 0)) * kL);
+          if (this.lookPitchT !== undefined) this.lookPitch = (this.lookPitch || 0) + (this.lookPitchT - (this.lookPitch || 0)) * kL;
         }
       }
       this.viewYaw = this.camYaw + (this.lookYaw || 0);
@@ -580,14 +585,14 @@ class Game {
       const ap = this.r3d.aimPoint(cr.x, cr.y, c);
       inp.aim = Math.atan2(ap.y - c.y, ap.x - c.x);
       const dz = ap.z - (c.z + 1.1), hd = Math.max(1, Math.hypot(ap.x - c.x, ap.y - c.y));
-      inp.pitch = ap.kind === 'ground' && Math.abs(dz) < 2.5 ? 0 : clamp(Math.atan2(dz, hd), -0.6, 0.9);
+      inp.pitch = ap.kind === 'ground' && Math.abs(dz) < 2.5 ? 0 : clamp(Math.atan2(dz, hd), -0.7, 1.5);
       this.aimLock = ap.car || null;
     } else if (Input.mouse.moved && this.r3d) {
       // Strahl durch das Fadenkreuz: trifft Auto, Hauswand, Boden oder Himmel -> Seiten- und Höhenwinkel
       const ap = this.r3d.aimPoint(Input.mouse.x, Input.mouse.y, c);
       inp.aim = Math.atan2(ap.y - c.y, ap.x - c.x);
       const dz = ap.z - (c.z + 1.1), hd = Math.max(1, Math.hypot(ap.x - c.x, ap.y - c.y));
-      inp.pitch = ap.kind === 'ground' && Math.abs(dz) < 2.5 ? 0 : clamp(Math.atan2(dz, hd), -0.6, 0.9);
+      inp.pitch = ap.kind === 'ground' && Math.abs(dz) < 2.5 ? 0 : clamp(Math.atan2(dz, hd), -0.7, 1.5);
       this.aimLock = ap.car || null;
     } else if (Input.mouse.moved) {
       const mw = this.screenToWorld(Input.mouse.x, Input.mouse.y);
@@ -988,7 +993,7 @@ class Game {
     const turnRate = c.human ? 40 : 7;
     const diff = angNorm(inp.aim - c.turret);
     c.turret += clamp(diff, -turnRate * dt, turnRate * dt);
-    const pw = clamp(inp.pitch || 0, -0.6, 0.9);
+    const pw = clamp(inp.pitch || 0, -0.7, 1.5);
     c.tpitch = (c.tpitch || 0) + clamp(pw - (c.tpitch || 0), -turnRate * 0.5 * dt, turnRate * 0.5 * dt);
     c.fireCd -= dt;
     if (inp.fire && c.fireCd <= 0 && c.alive) {
