@@ -34,18 +34,36 @@ const PROP = [
 
 // ---------------- Eingabe ----------------
 const Input = {
-  keys: {}, mouse: { x: 0, y: 0, down: false, right: false, moved: false, dx: 0, dy: 0 },
+  keys: {}, mouse: { x: 0, y: 0, lastX: null, lastY: null, down: false, right: false, moved: false, dx: 0, dy: 0 },
   touch: { active: false, move: null, aim: null, jump: false, boost: false, mine: false, drift: false },
   init(canvas) {
     addEventListener('keydown', e => {
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', 'NumpadEnter'].includes(e.code)) e.preventDefault();
       this.keys[e.code] = true;
+      if (['KeyF', 'Enter', 'NumpadEnter'].includes(e.code)) {
+        Sound.init();
+        if (Input.wantLock && Input.wantLock() && document.pointerLockElement !== canvas && canvas.requestPointerLock) {
+          try { canvas.requestPointerLock(); } catch (er) { /* egal */ }
+        }
+      }
       if (Input.onKey) Input.onKey(e.code);
     });
     addEventListener('keyup', e => { this.keys[e.code] = false; });
-    addEventListener('blur', () => { this.keys = {}; this.mouse.down = false; });
+    addEventListener('blur', () => { this.keys = {}; this.mouse.down = false; this.mouse.lastX = null; this.mouse.lastY = null; });
     canvas.addEventListener('mousemove', e => {
-      if (document.pointerLockElement === canvas) { this.mouse.dx += e.movementX || 0; this.mouse.dy += e.movementY || 0; return; }
+      if (document.pointerLockElement === canvas) {
+        this.mouse.dx += e.movementX || 0;
+        this.mouse.dy += e.movementY || 0;
+        return;
+      }
+      const mx = e.movementX !== undefined ? e.movementX : (this.mouse.lastX !== null ? e.clientX - this.mouse.lastX : 0);
+      const my = e.movementY !== undefined ? e.movementY : (this.mouse.lastY !== null ? e.clientY - this.mouse.lastY : 0);
+      this.mouse.lastX = e.clientX; this.mouse.lastY = e.clientY;
+      // Trackpad-Freisicht auch ohne Mausklick in der 3D-Drohnenansicht ermöglichen
+      if (Input.wantLock && Input.wantLock()) {
+        this.mouse.dx += clamp(mx, -55, 55);
+        this.mouse.dy += clamp(my, -55, 55);
+      }
       this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.moved = true;
     });
     canvas.addEventListener('mousedown', e => {
@@ -163,7 +181,12 @@ class Particles {
 // ---------------- Fahrzeug ----------------
 let CAR_ID = 1;
 function newBotState(role = 'attack') {
-  return { role, thinkT: Math.random() * 0.3, wp: null, stuckT: 0, revT: 0, revSteer: 1, roam: null, roamT: 0, target: null, aimErr: 0, field: null, fieldKey: -1, jumpT: 0, hurtT: 0, mineT: 0 };
+  return {
+    role, thinkT: Math.random() * 0.3, wp: null, stuckT: 0, revT: 0, revSteer: 1,
+    roam: null, roamT: 0, target: null, aimErr: 0, pitchErr: 0,
+    acqT: 0, burstT: 1.2 + Math.random() * 0.6, firePauseT: 0, swayPh: Math.random() * 6.28,
+    field: null, fieldKey: -1, jumpT: 0, hurtT: 0, mineT: 0,
+  };
 }
 const r1 = v => Math.round(v * 10) / 10, r2 = v => Math.round(v * 100) / 100;
 class Car {
@@ -173,8 +196,8 @@ class Car {
     this.ups = { spd: 0, arm: 0, dmg: 0 }; this.xp = 0; this.pts = 0; this.lvlGiven = 0;
     this.st = carStats(def, lv, this.ups);
     this.shape = SHAPE[def.shape];
-    this.w = WEAPONS[def.weapon];
-    this.range = this.w.speed * this.w.life * (this.w.accel ? 1.4 : 1);
+    this.ggTier = 0;
+    this.setWeapon(game && game.gameMode === 'gungame' ? GUNGAME_TIERS[0] : def.weapon);
     this.kills = 0; this.deaths = 0; this.caps = 0; this.returns = 0; this.assists = 0; this.score = 0;
     this.input = { thr: 0, steer: 0, aim: 0, fire: false, jump: false, boost: false, mine: false };
     this.bot = isPlayer ? null : newBotState();
@@ -182,13 +205,37 @@ class Car {
     this.alive = false; this.respawnT = 0;
     this.spawn(true);
   }
+  setWeapon(wId) {
+    this.weaponId = wId || this.def.weapon;
+    this.w = WEAPONS[this.weaponId] || WEAPONS[this.def.weapon];
+    this.st = carStats(this.def, this.lv, this.ups);
+    if ((this.game && this.game.gameMode === 'gungame') || this.weaponId !== this.def.weapon) {
+      const dmgMul = (1 + 0.1 * (this.lv.waffe || 0)) * (1 + 0.12 * (this.ups.dmg || 0));
+      const rateMul = 1 + 0.08 * (this.lv.feuer || 0);
+      this.st.dmg = Math.round((this.w.baseDmg || this.st.dmg) * dmgMul * 10) / 10;
+      this.st.rate = +(((this.w.baseRate || this.st.rate) * rateMul).toFixed(2));
+    }
+    this.range = this.w.speed * this.w.life * (this.w.accel ? 1.4 : 1);
+  }
   spawn(first) {
-    const g = this.game, base = g.world.bases[this.team];
-    const p = g.world.randomFreeNear(base.x, base.y, 3, 13);
+    const g = this.game;
+    let base = g.world.bases[this.team % g.world.bases.length];
+    if (g.gameMode === 'gungame') {
+      const ffaSpawns = [
+        g.world.bases[0], g.world.bases[1],
+        { x: 560, y: 1610 }, { x: 630, y: 240 }, { x: 585, y: 890 },
+        { x: 295, y: 865 }, { x: 845, y: 865 }, { x: 610, y: 1460 },
+      ];
+      base = ffaSpawns[(this.id + (this.life || 0)) % ffaSpawns.length];
+    }
+    const p = g.world.randomFreeNear(base.x, base.y, 4, g.gameMode === 'gungame' ? 28 : 13);
     this.x = p.x; this.y = p.y;
     this.a = Math.atan2(g.world.h / 2 - base.y, g.world.w / 2 - base.x) + rand(-0.4, 0.4);
-    this.vx = 0; this.vy = 0; this.z = g.world.terrain(p.x, p.y); this.vz = 0; this.groundZ = this.z; this.groundKind = 'terrain'; this.onGround = true;
-    this.turret = this.a;
+    this.vx = 0; this.vy = 0; this.z = g.world.terrain(p.x, p.y); this.vz = 0;
+    this.groundZ = this.z; this.smoothGroundZ = this.z; this.groundKind = 'terrain'; this.onGround = true;
+    this.turret = this.a; this.tpitch = 0;
+    this.pitch = 0; this.pitchV = 0; this.roll = 0; this.rollV = 0; this.flipAcc = 0; this.dodgeT = 0; this.dodgeRollDir = 0;
+    this.coyoteT = 0.14; this.jumpBufT = 0; this.jumpHeld = false; this.airJumps = this.bot ? 0 : 1;
     this.hp = this.st.hp; this.boost = this.st.boost; this.boosting = false;
     this.jumpCd = 0; this.fireCd = 0; this.mines = 2; this.mineCd = 0; this.mineRegen = 0;
     this.alive = true; this.protect = first ? 0 : 2.5; this.flag = -1; this.flashT = 0;
@@ -200,7 +247,7 @@ class Car {
   // Werte nach Match-Upgrade neu berechnen
   recalc() {
     const old = this.st.hp;
-    this.st = carStats(this.def, this.lv, this.ups);
+    this.setWeapon(this.weaponId || this.def.weapon);
     if (this.alive) this.hp = Math.min(this.st.hp, this.hp + Math.max(0, this.st.hp - old));
   }
 }
@@ -210,6 +257,9 @@ class Game {
   constructor(canvas, opts) {
     this.canvas = canvas; this.g = canvas.getContext('2d');
     this.opts = opts;
+    this.gameMode = opts.gameMode || 'ctf';
+    const rawLimit = opts.capLimit || 3;
+    this.targetScore = this.gameMode === 'tdm' ? (rawLimit <= 10 ? rawLimit * 5 : rawLimit) : this.gameMode === 'gungame' ? GUNGAME_TIERS.length : rawLimit;
     this.map = MAPS.find(m => m.id === opts.mapId) || MAPS[0];
     this.world = new World(this.map);
     this.particles = new Particles();
@@ -288,17 +338,18 @@ class Game {
     const humans = [0, 1].map(t => this.cars.filter(c => c.human && c.team === t).length);
     const sizes = [0, 1].map(t => this.cars.filter(c => c.team === t).length);
     let team = humans[0] !== humans[1] ? (humans[0] < humans[1] ? 0 : 1) : sizes[0] !== sizes[1] ? (sizes[0] < sizes[1] ? 0 : 1) : (this.score[0] <= this.score[1] ? 0 : 1);
-    const pickBot = t => this.cars.filter(c => !c.human && c.team === t).sort((a, b) => (a.flag >= 0) - (b.flag >= 0) || (b.alive ? 0 : 1) - (a.alive ? 0 : 1))[0];
+    const pickBot = t => this.cars.filter(c => !c.human && (this.gameMode === 'gungame' || c.team === t)).sort((a, b) => (a.flag >= 0) - (b.flag >= 0) || (b.alive ? 0 : 1) - (a.alive ? 0 : 1))[0];
     let bot = pickBot(team);
     if (!bot && pickBot(1 - team) && humans[1 - team] < humans[team]) { team = 1 - team; bot = pickBot(team); }
+    if (this.gameMode === 'gungame' && bot) team = bot.team;
     // Rückkehrer bekommt sein altes Auto (Team, Punkte, XP) zurück
     const own = this.cars.find(c => !c.human && c.wasName && c.wasName === info.name);
     if (own) { bot = own; team = own.team; }
     const id = bot ? bot.id : Math.max(...this.cars.map(c => c.id)) + 1;
     const r = { id, key: info.key, name: info.name, driver: info.driver, car: info.car, upgrades: info.upgrades || {}, team, human: true };
-    const keep = own ? { kills: own.kills, deaths: own.deaths, caps: own.caps, returns: own.returns, assists: own.assists, score: own.score, xp: own.xp, pts: own.pts, earned: own.earned } : null;
+    const keep = own ? { kills: own.kills, deaths: own.deaths, caps: own.caps, returns: own.returns, assists: own.assists, score: own.score, xp: own.xp, pts: own.pts, earned: own.earned, ggTier: own.ggTier || 0 } : null;
     const c = this.putCar(r);
-    if (keep) { Object.assign(c, keep); if (own.car === undefined && own.def.id === c.def.id) { c.ups = { ...own.ups }; if (c.recalc) c.recalc(); } }
+    if (keep) { Object.assign(c, keep); if (this.gameMode === 'gungame') c.setWeapon(GUNGAME_TIERS[Math.min(c.ggTier, GUNGAME_TIERS.length - 1)]); if (own.car === undefined && own.def.id === c.def.id) { c.ups = { ...own.ups }; if (c.recalc) c.recalc(); } }
     c.protect = 3;
     this.events.push(['rj', r]);
     this.log({ text: bot ? 'ist beigetreten (ersetzt ' + bot.name + ')' : 'ist beigetreten', a: c, flagTeam: team });
@@ -313,15 +364,20 @@ class Game {
     const lvRange = [[0, 1], [1, 3], [3, 5]][opts.difficulty] || [1, 3];
     let di = 0;
     for (const h of humans) roster.push({ ...h, id: id++ });
-    if (opts.bots === false) return roster;
-    for (let team = 0; team < 2; team++) {
-      const have = humans.filter(h => h.team === team).length;
-      for (let i = have; i < opts.teamSize; i++) {
-        const lv = {};
-        for (const u of UPGRADES) lv[u.id] = Math.round(rand(lvRange[0], lvRange[1]));
-        const drv = others.length ? others[di++ % others.length] : null;
-        roster.push({ key: 'bot' + id, id: id++, car: pick(CARS).id, upgrades: lv, driver: drv ? drv.id : '', name: drv ? drv.name : 'Bot ' + id, team, human: false, role: i % 3 === 1 ? 'defend' : 'attack' });
+    if (opts.bots !== false) {
+      for (let team = 0; team < 2; team++) {
+        const have = humans.filter(h => h.team === team).length;
+        for (let i = have; i < opts.teamSize; i++) {
+          const lv = {};
+          for (const u of UPGRADES) lv[u.id] = Math.round(rand(lvRange[0], lvRange[1]));
+          const drv = others.length ? others[di++ % others.length] : null;
+          roster.push({ key: 'bot' + id, id: id++, car: pick(CARS).id, upgrades: lv, driver: drv ? drv.id : '', name: drv ? drv.name : 'Bot ' + id, team, human: false, role: i % 3 === 1 ? 'defend' : 'attack' });
+        }
       }
+    }
+    if (opts.gameMode === 'gungame') {
+      // Gun Game ist Jeder-gegen-Jeden (Free-for-All): jedes Fahrzeug bekommt eine eigene Team-ID & Farbe
+      roster.forEach((r, idx) => { r.team = idx; r.role = 'attack'; });
     }
     return roster;
   }
@@ -361,14 +417,12 @@ class Game {
   // ---------------- Schleife ----------------
   frame(now) {
     if (!this.running) return;
-    let dt = (now - this.last) / 1000; this.last = now;
-    if (dt > 0.1) dt = 0.1;
+    let dt = Math.min(Math.max(0, (now - this.last) / 1000), 0.05); this.last = now;
     if (!this.paused) {
-      this.acc += dt;
+      this.acc = Math.min(this.acc + dt, 0.05);
       const step = 1 / 60;
       let n = 0;
-      while (this.acc >= step && n < 6) { this.update(step); this.acc -= step; n++; }
-      if (n === 6) this.acc = 0;
+      while (this.acc >= step && n < 4) { this.update(step); this.acc -= step; n++; }
     }
     this.render(dt);
     requestAnimationFrame(this.frame);
@@ -458,7 +512,11 @@ class Game {
       this.countT -= dt;
       const c = Math.ceil(this.countT);
       if (c < this.lastCount && c > 0) { this.lastCount = c; Sound.play('countdown'); this.say(String(c), '#ffe66d', 0.9); }
-      if (this.countT <= 0) { this.state = 'play'; Sound.play('go'); this.say('LOS! Hol dir die Flagge!', '#7dff8a', 1.6); }
+      if (this.countT <= 0) {
+        this.state = 'play'; Sound.play('go');
+        const goMsg = this.gameMode === 'gungame' ? 'LOS! Gun Game – jede Eliminierung rüstet auf!' : this.gameMode === 'tdm' ? 'LOS! Team-Deathmatch!' : 'LOS! Hol dir die Flagge!';
+        this.say(goMsg, '#7dff8a', 1.8);
+      }
     } else if (this.state === 'play') {
       this.time -= dt;
       if (this.time <= 0) { this.time = 0; this.endGame(); }
@@ -510,10 +568,23 @@ class Game {
           const M = Input.mouse;
           if (M.dx || M.dy) {
             // Zielwerte: volle 360° Rundumsicht, nach oben fast senkrecht
-            this.lookYawT = angNorm((this.lookYawT ?? this.lookYaw ?? 0) + M.dx * 0.0032);
-            this.lookPitchT = clamp((this.lookPitchT ?? this.lookPitch ?? 0) - M.dy * 0.0024, -0.45, 1.55);
+            // Dezente Verlangsamung auf dem Ziel (Trackpad-Magnetbremse)
+            const slow = this.aimLock && this.aimLock.alive ? 0.72 : 1.0;
+            this.lookYawT = angNorm((this.lookYawT ?? this.lookYaw ?? 0) + M.dx * 0.0031 * slow);
+            this.lookPitchT = clamp((this.lookPitchT ?? this.lookPitch ?? 0) - M.dy * 0.0023 * slow, -0.45, 1.55);
             this.lookIdle = 0; M.dx = 0; M.dy = 0;
           } else this.lookIdle = (this.lookIdle || 0) + dt;
+          // Sanfte magnetische Kameraführung auf erfasste Gegner für entspanntes Trackpad-Zielen
+          if (this.aimLock && this.aimLock.alive && (this.opts.autoAim || this.opts.autoFire || p.input.fire)) {
+            const t = this.aimLock;
+            const wantCamYaw = Math.atan2(t.y - p.y, t.x - p.x);
+            const curViewYaw = this.camYaw + (this.lookYawT ?? this.lookYaw ?? 0);
+            const yawErr = angNorm(wantCamYaw - curViewYaw);
+            if (Math.abs(yawErr) < 0.36) {
+              const magRate = (this.opts.autoAim ? 2.4 : 1.1) * (this.aimMagnet || 0.6);
+              this.lookYawT = angNorm((this.lookYawT ?? this.lookYaw ?? 0) + yawErr * Math.min(1, dt * magRate));
+            }
+          }
           // weich nachführen statt ruckartig
           const kL = 1 - Math.exp(-dt * 16);
           if (this.lookYawT !== undefined) this.lookYaw = angNorm((this.lookYaw || 0) + angNorm(this.lookYawT - (this.lookYaw || 0)) * kL);
@@ -578,8 +649,12 @@ class Game {
     inp.boost = !!(K.ShiftLeft || K.ShiftRight);
     inp.mine = !!(K.KeyE || Input.mouse.right);
     inp.drift = !!(K.KeyQ || K.KeyX);
-    inp.fire = Input.mouse.down || !!K.KeyF || !!K.Enter;
+    const keyFire = !!(K.KeyF || K.Enter || K.NumpadEnter || K.ControlLeft || K.ControlRight);
+    const manualFire = Input.mouse.down || keyFire;
+    inp.fire = manualFire;
     inp.pitch = 0;
+    this.aimLock = null;
+    this.aimMagnet = 0;
     if (this.r3d && this.camMode === 'chase') {
       const cr = this.crosshair();
       const ap = this.r3d.aimPoint(cr.x, cr.y, c);
@@ -597,11 +672,73 @@ class Game {
     } else if (Input.mouse.moved) {
       const mw = this.screenToWorld(Input.mouse.x, Input.mouse.y);
       inp.aim = Math.atan2(mw.y - c.y, mw.x - c.x);
-    } else inp.aim = c.a;
-    if (this.opts.autoAim) this.autoAim(c, true);
+    } else {
+      inp.aim = this.camMode === 'chase' ? (this.viewYaw ?? c.a) : c.a;
+    }
+    this.applySoftAimAssist(c, manualFire);
   }
   // Fadenkreuz der Drohnen-Ansicht (CSS-Pixel): Bildmitte, etwas über dem Autodach
   crosshair() { return { x: innerWidth / 2, y: innerHeight * 0.4 }; }
+  // Magnetische Trackpad-Zielhilfe + Auto-Feuer-Logik
+  applySoftAimAssist(c, manualFire) {
+    const inp = c.input;
+    const assistOn = !!(this.opts && this.opts.autoAim);
+    const autoFireOn = !!(this.opts && this.opts.autoFire);
+    const maxRange = c.range * 1.06;
+    const maxCone = assistOn ? 0.38 : 0.16;   // ~22° mit Zielhilfe, ~9° dezente Basis-Hilfe
+    let best = this.aimLock && this.aimLock.alive ? this.aimLock : null;
+    let bestScore = best ? 0 : 1e9;
+    const refYaw = inp.aim;
+    for (const o of this.cars) {
+      if (!o.alive || o === c || o.team === c.team) continue;
+      const dx = o.x - c.x, dy = o.y - c.y, dist = Math.hypot(dx, dy);
+      if (dist > maxRange || dist < 0.1) continue;
+      const toYaw = Math.atan2(dy, dx);
+      const angDiff = Math.abs(angNorm(toYaw - refYaw));
+      if (angDiff > maxCone) continue;
+      if (!this.world.los(c.x, c.y, o.x, o.y) && Math.abs(o.z - c.z) > 4.5) continue;
+      const score = angDiff + (dist / maxRange) * 0.18 - (o.flag >= 0 ? 0.06 : 0);
+      if (score < bestScore) { bestScore = score; best = o; }
+    }
+    // Falls im 2D-Modus ohne Mausbewegung oder mit aktiver Zielhilfe im Nahkampf ein Ziel direkt vor dem Auto ist
+    if (!best && assistOn && !Input.mouse.moved && this.camMode !== 'chase') {
+      best = this.findTarget(c, c.range * 0.95);
+    }
+    if (best && best.alive) {
+      const dist = Math.hypot(best.x - c.x, best.y - c.y);
+      const tt = clamp(dist / Math.max(20, c.w.speed), 0, 0.85);
+      const lead = assistOn ? 0.82 : 0.55;
+      const lx = best.x + best.vx * tt * lead, ly = best.y + best.vy * tt * lead;
+      const wantYaw = Math.atan2(ly - c.y, lx - c.x);
+      const dz = (best.z + 0.95) - (c.z + 1.1);
+      const wantPitch = Math.abs(dz) > 1.2 || !c.onGround || !best.onGround
+        ? clamp(Math.atan2(dz, Math.max(1, dist)), -0.68, 1.35)
+        : 0;
+      const angDiff = Math.abs(angNorm(wantYaw - inp.aim));
+      const pull = this.aimLock === best
+        ? (assistOn ? 0.94 : 0.78)
+        : clamp(1 - angDiff / Math.max(0.01, maxCone), 0.25, 1) * (assistOn ? 0.88 : 0.6);
+      inp.aim = angNorm(inp.aim + angNorm(wantYaw - inp.aim) * pull);
+      inp.pitch = (inp.pitch || 0) + (wantPitch - (inp.pitch || 0)) * pull;
+      this.aimLock = best;
+      this.aimMagnet = pull;
+    }
+    if (autoFireOn && !manualFire) {
+      if (this.aimLock && this.aimLock.alive) {
+        const dSq = d2(c.x, c.y, this.aimLock.x, this.aimLock.y);
+        inp.fire = dSq <= (c.range * 1.02) ** 2;
+      } else {
+        // Auch Holzkisten/Strohballen direkt im Fadenkreuz automatisch beschießen
+        let crateTarget = false;
+        for (const p of this.props) {
+          if (!p.alive || p.hp <= 0) continue;
+          const dx = p.x - c.x, dy = p.y - c.y, dd = dx * dx + dy * dy;
+          if (dd < 24 * 24 && Math.abs(angNorm(Math.atan2(dy, dx) - inp.aim)) < 0.14) { crateTarget = true; break; }
+        }
+        inp.fire = crateTarget;
+      }
+    }
+  }
   autoAim(c, alsoFire) {
     const t = this.findTarget(c, c.range * 0.95);
     if (t) {
@@ -609,6 +746,7 @@ class Game {
       c.input.aim = Math.atan2(t.y + t.vy * tt - c.y, t.x + t.vx * tt - c.x);
       const dz = (t.z + 0.9) - (c.z + 1.1);
       c.input.pitch = Math.abs(dz) > 1.8 ? clamp(Math.atan2(dz, Math.max(1, tt * c.w.speed)), -0.6, 0.9) : 0;
+      this.aimLock = t;
       if (alsoFire && Input.touch.active && !c.input.manualAim) c.input.fire = true;
     } else if (alsoFire && Input.touch.active && !c.input.manualAim) { c.input.fire = false; c.input.aim = c.a; }
   }
@@ -626,23 +764,31 @@ class Game {
   // ---------------- Physik ----------------
   physics(c, dt, playing) {
     const W = this.world, st = c.st, inp = c.input;
+    const prevZ = c.z;
     const thr = playing ? inp.thr : 0;
     // Lenkung weich einblenden (Menschen), Zurückstellen geht schneller
     const back = Math.abs(inp.steer) < Math.abs(c.steerS) || Math.sign(inp.steer) !== Math.sign(c.steerS);
-    const sr = c.bot ? 12 : back ? 7 : 3.2;
+    const sr = c.bot ? 12 : back ? 7.5 : 3.6;
     c.steerS += clamp(inp.steer - c.steerS, -sr * dt, sr * dt);
     const steer = c.steerS;
     c.protect = Math.max(0, c.protect - dt); c.flashT = Math.max(0, c.flashT - dt);
     c.jumpCd = Math.max(0, c.jumpCd - dt); c.rampCd = Math.max(0, c.rampCd - dt);
+    // Sprung-Eingabepuffer (Jump Buffering), damit Sprünge kurz vor der Landung oder auf Kuppen nie verschluckt werden
+    const jumpEdge = playing && inp.jump && !c.jumpHeld;
+    if (jumpEdge) c.jumpBufT = 0.14;
+    else c.jumpBufT = Math.max(0, (c.jumpBufT || 0) - dt);
     if (!inp.jump) c.jumpHeld = false;
-    // Boden: Gelände, Tunnelboden, Brücke oder Dach
-    c.groundZ = W.groundAt(c.x, c.y, c.z);
+    // Boden: Gelände, Tunnelboden, Rampe, Brücke oder Dach (mit Swept-Z gegen Durchfallen)
+    c.groundZ = W.groundAt(c.x, c.y, c.z, prevZ);
     c.groundKind = W.groundKind;
-    const [sx, sy] = c.groundKind === 'roof' ? [0, 0] : W.slopeAt(c.x, c.y, c.z);
+    c.smoothGroundZ = c.smoothGroundZ === undefined
+      ? c.groundZ
+      : c.smoothGroundZ + (c.groundZ - c.smoothGroundZ) * Math.min(1, dt * (c.groundZ < c.smoothGroundZ ? 4.5 : 8));
+    const [sx, sy] = W.slopeAt(c.x, c.y, c.z);
     c.slopeX = sx; c.slopeY = sy;
     const surfVz = sx * c.vx + sy * c.vy;
     c.airLock = Math.max(0, (c.airLock || 0) - dt);
-    const onGround = c.airLock <= 0 && c.z <= c.groundZ + 0.1 && c.vz <= surfVz + 0.8;
+    const onGround = c.airLock <= 0 && c.z <= c.groundZ + 0.14 && c.vz <= surfVz + 1.15;
     if (!c.onGround && onGround) {
       if (c.airT > 0.25 && (c.pitch || c.flipAcc)) this.landFlip(c);
       if (c.airT > 0.35) {
@@ -652,23 +798,36 @@ class Game {
       c.airT = 0;
     }
     c.onGround = onGround;
-    if (!onGround) c.airT += dt;
-    else if (c.pitch || c.dodgeT) { c.pitch = 0; c.pitchV = 0; c.flipAcc = 0; c.dodgeT = 0; }
-    // Hangabtrieb: bergauf langsamer, bergab schneller
-    if (onGround) { c.vx -= GRAV * 0.6 * sx * dt; c.vy -= GRAV * 0.6 * sy * dt; }
+    if (onGround) {
+      c.coyoteT = 0.14;
+      c.airJumps = c.bot ? 0 : 1;
+      if (c.pitch || c.roll || c.dodgeT) {
+        c.pitch = 0; c.pitchV = 0; c.roll = 0; c.rollV = 0; c.flipAcc = 0; c.dodgeT = 0; c.dodgeRollDir = 0;
+      }
+    } else {
+      c.airT += dt;
+      c.coyoteT = Math.max(0, (c.coyoteT || 0) - dt);
+    }
+    // Hangabtrieb: bergauf langsamer, bergab schneller (auf Rampen reduziert, damit man leicht hochkommt)
+    if (onGround) {
+      const gravMul = c.groundKind === 'ramp' ? 0.25 : 0.55;
+      c.vx -= GRAV * gravMul * sx * dt; c.vy -= GRAV * gravMul * sy * dt;
+    }
     const fx = Math.cos(c.a), fy = Math.sin(c.a);
     let vF = c.vx * fx + c.vy * fy, vL = -c.vx * fy + c.vy * fx;
-    // Turbo
+    // Turbo (in der Luft schnellerer Verbrauch gegen unendliches Fliegen)
     c.boosting = playing && inp.boost && c.boost > 0.02 && (thr >= 0 || !onGround);
-    if (c.boosting) { c.boost = Math.max(0, c.boost - dt); }
+    if (c.boosting) { c.boost = Math.max(0, c.boost - dt * (onGround ? 1.0 : 1.85)); }
     else {
-      // Nitro lädt schneller beim Driften und in der Luft (Sprünge, Saltos)
-      const bonus = (c.drifting && Math.hypot(c.vx, c.vy) > 8 ? 0.7 : 0) + (!onGround ? 0.45 : 0);
+      // Nitro lädt schneller beim Driften, in der Luft nur minimal
+      const bonus = (c.drifting && Math.hypot(c.vx, c.vy) > 8 ? 0.7 : 0) + (!onGround ? 0.08 : 0);
       c.boost = Math.min(st.boost, c.boost + (st.boostRegen + bonus) * dt);
     }
     const wz = W.waterAt(c.x, c.y);
-    const surfWater = wz !== null && c.groundKind !== 'deck' && c.groundKind !== 'roof' && c.z < wz + 0.5;
-    if (onGround) {
+    const surfWater = wz !== null && c.groundKind !== 'deck' && c.groundKind !== 'roof' && c.groundKind !== 'ramp' && c.z < wz + 0.5;
+    // Bodensprung (inklusive Coyote-Time kurz nach Kuppen/Kanten)
+    const canGroundJump = (onGround || c.coyoteT > 0) && c.jumpCd <= 0 && playing && (c.jumpBufT > 0 || (inp.jump && !c.jumpHeld));
+    if (onGround && !canGroundJump) {
       let maxS = st.speed * (c.boosting ? 1.5 : 1) * (c.flag >= 0 ? 0.94 : 1);
       let target = 0, acc = 8;
       const t = c.boosting ? 1 : thr;
@@ -694,70 +853,103 @@ class Game {
       if (c.boosting && Math.random() < 0.7) {
         this.particles.add({ x: c.x - fx * c.def.len * 0.55, y: c.y - fy * c.def.len * 0.55, vx: -fx * 10 + rand(-2, 2), vy: -fy * 10 + rand(-2, 2), life: 0.25, max: 0.25, size: 0.6, grow: -1.5, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffffff', add: true });
       }
-      // Sprung
-      c.airJumps = c.bot ? 0 : 1;
-      if (playing && inp.jump && c.jumpCd <= 0) {
-        c.vz = Math.max(0, surfVz) + st.jump; c.jumpCd = st.jumpCd; c.onGround = false; c.jumpHeld = true;
-        Sound.play('jump', this.vol(c.x, c.y));
-        for (let i = 0; i < 10; i++) this.particles.add({ x: c.x, y: c.y, vx: rand(-6, 6), vy: rand(-6, 6), life: 0.5, max: 0.5, size: 0.7, grow: 2, color: '#d7d0c0', alpha: 0.5, drag: 4 });
-      }
       // Reifenspuren
       if (c.drifting || Math.abs(vL) > 4.5 || (c.boosting && Math.random() < 0.3) || (t !== 0 && Math.abs(vF) < 6 && Math.abs(target) > 10)) this.skid(c);
       else c.lastSkid = null;
+    } else if (canGroundJump) {
+      c.vz = Math.max(0, surfVz * 0.85) + st.jump;
+      c.jumpCd = st.jumpCd; c.onGround = false; c.airLock = 0.1;
+      c.coyoteT = 0; c.jumpBufT = 0; c.jumpHeld = true;
+      c.airJumps = c.bot ? 0 : 1;
+      c.z = Math.max(c.z, c.groundZ + 0.08);
+      Sound.play('jump', this.vol(c.x, c.y));
+      for (let i = 0; i < 10; i++) this.particles.add({ x: c.x, y: c.y, vx: rand(-6, 6), vy: rand(-6, 6), life: 0.5, max: 0.5, size: 0.7, grow: 2, color: '#d7d0c0', alpha: 0.5, drag: 4 });
     } else {
       c.drifting = false;
-      // Doppelsprung: Taste in der Luft erneut drücken
-      if (playing && inp.jump && !c.jumpHeld && c.airJumps > 0 && c.airT > 0.06) {
-        c.airJumps--; c.jumpHeld = true;
+      // Sanfter Luftwiderstand & präzise Luftkontrolle
+      const airDrag = c.boosting ? 0.20 : 0.32;
+      vF *= Math.exp(-airDrag * dt);
+      vL *= Math.exp(-(c.boosting ? 2.6 : 1.7) * dt);
+      if (!c.boosting && !c.bot && thr !== 0) {
+        vF = clamp(vF + thr * st.accel * 0.38 * dt, -st.speed * 0.65, st.speed * 1.2);
+      }
+      // Doppelsprung: Taste in der Luft erneut drücken (mit Pufferung)
+      if (playing && c.jumpBufT > 0 && c.airJumps > 0 && c.airT > 0.05) {
+        c.airJumps--; c.jumpBufT = 0; c.jumpHeld = true;
         const dThr = inp.thr || 0, dSt = inp.steer || 0;
         if (dThr || dSt) {
-          // Ausweichsprung: kräftiger Stoß in Richtung (vorne/hinten/seitlich), Vorwärts-/Rückwärtssalto
+          // Ausweichsprung: kräftiger Stoß in Richtung (vorne/hinten/seitlich), Salto oder Fassrolle
           const l = Math.hypot(dThr, dSt);
-          vF += dThr / l * 11; vL += dSt / l * 11; c.vz = Math.max(c.vz, 0) * 0.4 + st.jump * 0.6;
-          if (dThr) { c.dodgeT = 0.55; c.dodgeDir = Math.sign(dThr); }
-        } else c.vz = Math.max(c.vz, 0) + st.jump * 0.9;
+          vF = clamp(vF + dThr / l * 10.0, -st.speed * 0.9, st.speed * 1.5);
+          vL = clamp(vL + dSt / l * 10.0, -13, 13);
+          c.vz = Math.max(c.vz * 0.35, 0) + st.jump * 0.72;
+          if (Math.abs(dThr) >= Math.abs(dSt)) { c.dodgeT = 0.54; c.dodgeDir = Math.sign(dThr); c.dodgeRollDir = 0; }
+          else { c.dodgeT = 0.52; c.dodgeDir = 0; c.dodgeRollDir = Math.sign(dSt); }
+        } else {
+          c.vz = Math.max(c.vz * 0.35, 0) + st.jump * 0.88;
+        }
         Sound.play('jump', this.vol(c.x, c.y));
         for (let i = 0; i < 8; i++) this.particles.add({ x: c.x, y: c.y, zAbs: c.z + 0.3, vz: -3, vx: rand(-5, 5), vy: rand(-5, 5), life: 0.4, max: 0.4, size: 0.6, grow: 2, color: '#bfe8ff', alpha: 0.6, add: true });
       }
-      // Saltos: W/S + Nitro dreht nach vorne/hinten, W/S allein neigt nur leicht; kurz vor dem Boden richtet sich das Auto auf
-      const hgt = c.z - c.groundZ, nearGround = hgt < 3.5 && c.vz < 0;
+      // Kontrollierte Luftrotation mit Rotationsdämpfung (kein unkontrolliertes Weiterdrehen)
+      const hgt = c.z - c.groundZ, nearGround = hgt < 4.5 && c.vz < 0;
       const up = Math.round((c.pitch || 0) / (Math.PI * 2)) * Math.PI * 2;
       let wantV;
       const pt = c.bot ? 0 : thr;   // Bots fliegen gerade
-      if (c.dodgeT > 0) { c.dodgeT -= dt; wantV = -c.dodgeDir * 11.4; if (c.dodgeT <= 0) { c.pitch = angNorm(c.pitch); c.flipAcc = 0; } }
-      else if (c.boosting && pt !== 0 && !nearGround) wantV = -pt * 7.2;
-      else { const tgt = (nearGround ? up : up - pt * 0.35); wantV = clamp((tgt - (c.pitch || 0)) * (nearGround ? 6 : 4), -5.5, 5.5); }
-      c.pitchV = c.dodgeT > 0 ? wantV : (c.pitchV || 0) + (wantV - (c.pitchV || 0)) * Math.min(1, dt * 7);
+      c.pitchV = (c.pitchV || 0) * Math.exp(-dt * 4.5);
+      if (c.dodgeT > 0) {
+        c.dodgeT -= dt;
+        wantV = c.dodgeDir ? -c.dodgeDir * 11.4 : clamp((up - (c.pitch || 0)) * 6, -5.0, 5.0);
+        if (c.dodgeRollDir) c.roll = (c.roll || 0) + c.dodgeRollDir * 11.6 * dt;
+        if (c.dodgeT <= 0) { c.pitch = angNorm(c.pitch || 0); c.roll = angNorm(c.roll || 0); c.pitchV = 0; c.rollV = 0; c.flipAcc = 0; c.dodgeRollDir = 0; }
+      } else if (c.boosting && pt !== 0 && !nearGround && hgt > 3.5) {
+        wantV = -pt * 4.5;
+      } else {
+        const tgt = nearGround ? up : up - pt * 0.24;
+        wantV = clamp((tgt - (c.pitch || 0)) * (nearGround ? 9.0 : 5.5), -5.2, 5.2);
+      }
+      c.pitchV = c.dodgeT > 0 && c.dodgeDir ? wantV : c.pitchV + (wantV - c.pitchV) * Math.min(1, dt * 7.5);
       c.pitch = (c.pitch || 0) + c.pitchV * dt;
       c.flipAcc = (c.flipAcc || 0) + c.pitchV * dt;
-      c.a += steer * st.turn * (c.boosting ? 0.75 : 0.35) * dt;
+      // Seitenneigung (Air-Roll) mit starker Rotationsdämpfung und automatischer Stabilisierung vor der Landung
+      if (!(c.dodgeT > 0 && c.dodgeRollDir)) {
+        const wantRoll = nearGround ? 0 : clamp(-steer * (c.boosting ? 0.34 : 0.22) - (inp.drift ? steer * 0.28 : 0), -0.52, 0.52);
+        c.roll = angNorm(c.roll || 0);
+        c.rollV = ((c.rollV || 0) + angNorm(wantRoll - c.roll) * (nearGround ? 28 : 16) * dt) * Math.exp(-dt * 7.5);
+        c.roll = angNorm(c.roll + c.rollV * dt);
+      }
+      c.a += steer * st.turn * (c.boosting ? 0.58 : 0.36) * dt;
       c.lastSkid = null;
       if (c.boosting) {
-        // Nitro in der Luft: Schub nach vorne und Auftrieb -> gleiten / fliegen
-        vF = Math.min(vF + st.accel * 1.3 * dt, st.speed * 1.5);
-        vL *= Math.exp(-2.5 * dt);
-        c.vz += GRAV * (c.z - c.groundZ > 18 ? 0.9 : c.vz < 9 ? 1.3 : 0.92) * dt;   // kräftiger Auftrieb bis ~20 m: über Dächer hüpfen
-        if (c.vz < -3) c.vz += 14 * dt;
-        if (c.z - c.groundZ > 22 && c.vz > 0) c.vz *= 0.9;
+        // Nitro in der Luft: kontrollierter Gleit-Schub über Lücken/Dächer, aber kein unendliches Steigen
+        vF = Math.min(vF + st.accel * 1.05 * dt, st.speed * 1.38);
+        const flyH = Math.max(0, c.z - (c.smoothGroundZ ?? c.groundZ));
+        const liftFactor = clamp(0.76 - Math.max(0, flyH - 5.0) * 0.09, 0.10, 0.76);
+        c.vz += GRAV * liftFactor * dt;
+        if (c.vz < -9.5) c.vz += 11 * dt;
+        const maxClimb = clamp((9.5 - flyH) * 0.42, -3.0, 4.2);
+        if (c.vz > maxClimb) c.vz += (maxClimb - c.vz) * Math.min(1, dt * 6);
         if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6, y: c.y - fy * c.def.len * 0.6, zAbs: c.z + 0.6, vz: -2, vx: -fx * 12 + rand(-2, 2), vy: -fy * 12 + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
       }
     }
     c.vx = fx * vF - fy * vL; c.vy = fy * vF + fx * vL;
-    // Rampen
+    // Rampen-Absprung an der oberen Kante
     if (onGround && c.groundKind !== 'roof' && c.rampCd <= 0) {
       for (const r of W.ramps) {
         const dx = c.x - r.x, dy = c.y - r.y;
         if (dx * dx + dy * dy > (r.len * r.len + r.wid * r.wid) / 4 + 4) continue;
         const ca = Math.cos(r.a), sa = Math.sin(r.a);
         const u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
-        if (Math.abs(u) < r.len / 2 && Math.abs(v) < r.wid / 2 + 0.5) {
+        // Sanfter Übergang auf der Rampe, kräftiger Absprung ab der oberen Hälfte (u > -r.len * 0.15)
+        if (u > -r.len * 0.15 && u < r.len * 0.52 && Math.abs(v) < r.wid / 2 + 0.45) {
           const along = c.vx * ca + c.vy * sa;
           // Bots nehmen Flussschanzen nur gerade (sonst fahren sie drüber)
-          if (along > 4 && !(r.big && c.bot && along < 0.85 * Math.hypot(c.vx, c.vy))) {
-            c.vz = Math.max(0, surfVz) + clamp(4.5 + (r.big ? Math.max(along, 30) : along) * 0.32, 7, 15.5) + (r.big ? 1.5 : 0); c.rampCd = 0.8; c.onGround = false; c.z = Math.max(c.z, c.groundZ + 0.4);
+          if (along > 4.5 && !(r.big && c.bot && along < 0.85 * Math.hypot(c.vx, c.vy))) {
+            c.vz = Math.max(0, surfVz * 0.7) + clamp(4.8 + (r.big ? Math.max(along, 30) : along) * 0.32, 7.2, 15.5) + (r.big ? 1.5 : 0);
+            c.rampCd = 0.75; c.onGround = false; c.airLock = 0.12; c.z = Math.max(c.z, c.groundZ + 0.25);
             // auf Rampenrichtung ausrichten, damit man nicht seitlich abprallt; Flussschanzen geben Mindesttempo
             const sp2 = r.big ? Math.max(Math.hypot(c.vx, c.vy), 30) : Math.hypot(c.vx, c.vy);
-            const al = r.big ? 1 : 0.5;   // Flussschanzen schicken immer quer über den Fluss
+            const al = r.big ? 1 : 0.45;   // Flussschanzen schicken immer quer über den Fluss
             c.vx = c.vx * (1 - al) + ca * sp2 * al; c.vy = c.vy * (1 - al) + sa * sp2 * al;
             if (r.big) c.a = r.a;
             Sound.play('jump', this.vol(c.x, c.y));
@@ -766,68 +958,84 @@ class Game {
         }
       }
     }
-    // Schwerkraft: am Boden folgt das Auto der Oberfläche, sonst fällt es
-    if (c.onGround) c.vz = surfVz; else c.vz -= GRAV * dt;
+    // Schwerkraft: am Boden folgt das Auto der Oberfläche, in der Luft verstärkter Abwärtszug gegen Endlos-Flug
+    if (c.onGround) c.vz = surfVz;
+    else {
+      const airGrav = GRAV * (c.boosting ? 1.12 : 1.22);
+      c.vz = Math.max(-30, c.vz - airGrav * dt);
+    }
     c.z += c.vz * dt;
     // Decke (Tunnel, Brückenunterseite) begrenzt Sprünge
     const roof = W.ceilingAt(c.x, c.y, c.z);
-    if (roof !== null && c.z + 1.6 > roof) { c.z = Math.max(c.groundZ, roof - 1.6); if (c.vz > 0) c.vz = 0; }
-    // Bewegung + Kollision (Substeps)
+    if (roof !== null && c.z + 1.6 > roof) { c.z = Math.max(c.groundZ, roof - 1.6); if (c.vz > 0) c.vz = -0.5; }
+    // Bewegung + Kollision (Substeps gegen Tunneling und für sauberes Wandgleiten)
     const sp = c.speed;
-    const steps = sp * dt > 0.6 ? 2 : 1;
+    const steps = Math.max(1, Math.min(4, Math.ceil(sp * dt / 0.45)));
     let moved = 0;
     for (let s = 0; s < steps; s++) {
       const ox = c.x, oy = c.y;
       const mx = c.vx * dt / steps, my = c.vy * dt / steps, ml = Math.hypot(mx, my);
       // Gelände/Brücken: steile Hänge und Plattenkanten sind Wände
-      // höchstens 45° Steigung (bezogen auf den Abstand zum Prüfpunkt) plus kleine Bordsteinkante
       const rr = c.def.radius * 0.85, ux = ml > 1e-4 ? mx / ml : 0, uy = ml > 1e-4 ? my / ml : 0;
-      const stepH = 0.15 + 1.0 * ml, stepF = 0.15 + 1.0 * (ml + rr);
+      const stepH = 0.22 + 1.05 * ml, stepF = 0.22 + 1.05 * (ml + rr);
       // am Boden fährt man nicht ins Wasser (Ufer wie ein Bordstein) – nur ein zu kurzer Sprung endet im Fluss
       const wet = (x, y) => { if (c.z - c.groundZ > 0.8 || c.groundKind !== 'terrain') return false; const wz2 = W.waterAt(x, y); return wz2 !== null && wz2 > c.z - 3; };
       const bl = (x, y) => W.blockedAt(x, y, c.z, stepH) || wet(x, y) || (ml > 1e-4 && (W.blockedAt(x + ux * rr, y + uy * rr, c.z, stepF) || wet(x + ux * rr, y + uy * rr)));
       if (!bl(ox + mx, oy + my)) { c.x = ox + mx; c.y = oy + my; }
       else {
         const imp = Math.hypot(c.vx, c.vy);
-        if (!bl(ox + mx, oy)) { c.x = ox + mx; c.vy *= -0.15; }
-        else if (!bl(ox, oy + my)) { c.y = oy + my; c.vx *= -0.15; }
-        else { c.vx *= -0.2; c.vy *= -0.2; }
-        if (imp > 22) {
-          const cdmg = (imp - 22) * 0.45 / c.def.mass;
-          if (this.isClient && c === this.player) c.crashAcc += cdmg;
-          this.damage(c, cdmg, null, 'crash');
+        // Sauberes Entlanggleiten an Wänden und Kanten statt Rückwärts-Abprallen
+        if (!bl(ox + mx, oy)) { c.x = ox + mx; c.vy *= 0.2; c.vx *= 0.94; }
+        else if (!bl(ox, oy + my)) { c.y = oy + my; c.vx *= 0.2; c.vy *= 0.94; }
+        else { c.vx *= -0.12; c.vy *= -0.12; }
+        if (imp > 23) {
+          // Nahezu kein Selbstschaden an Wänden/Gelände (0 bei normalem Tempo, minimal bei extremem Frontalaufprall)
+          if (imp > 38) {
+            const cdmg = Math.min(1.2, (imp - 38) * 0.025 / c.def.mass);
+            if (this.isClient && c === this.player) c.crashAcc += cdmg;
+            this.damage(c, cdmg, null, 'crash');
+          }
           Sound.play('clank', this.vol(c.x, c.y));
         }
       }
       moved += Math.hypot(c.x - ox, c.y - oy);
-      const hit = W.collideCircle(c, c.def.radius, c.z);
+      const hit = W.collideCircle(c, c.def.radius, c.z, c.vz);
       if (hit) {
         const vn = c.vx * hit.nx + c.vy * hit.ny;
         if (vn < 0) {
-          c.vx -= 1.3 * vn * hit.nx; c.vy -= 1.3 * vn * hit.ny;
-          c.vx *= 0.92; c.vy *= 0.92;
-          if (-vn > 22) {
-            const cdmg = (-vn - 22) * 0.45 / c.def.mass;
-            if (this.isClient && c === this.player) c.crashAcc += cdmg;
-            this.damage(c, cdmg, null, 'crash');
+          // Tangentiales Gleiten an Gebäudewänden (geringe Elastizität 1.08 statt 1.3)
+          c.vx -= 1.08 * vn * hit.nx; c.vy -= 1.08 * vn * hit.ny;
+          c.vx *= 0.95; c.vy *= 0.95;
+          if (-vn > 23) {
+            // Nahezu kein Selbstschaden an Gebäuden/Hindernissen (0 bei Streifschüssen, minimal bei extremem Frontalcrash)
+            if (-vn > 38) {
+              const cdmg = Math.min(1.2, (-vn - 38) * 0.025 / c.def.mass);
+              if (this.isClient && c === this.player) c.crashAcc += cdmg;
+              this.damage(c, cdmg, null, 'crash');
+            }
             Sound.play('clank', this.vol(c.x, c.y));
-            if (c.isPlayer) this.shake = Math.min(1, this.shake + 0.3);
+            if (c.isPlayer) this.shake = Math.min(1, this.shake + 0.2);
             for (let i = 0; i < 6; i++) this.particles.add({ type: 'spark', x: c.x - hit.nx * c.def.radius, y: c.y - hit.ny * c.def.radius, zAbs: c.z + 0.8, vx: rand(-12, 12), vy: rand(-12, 12), life: 0.3, max: 0.3, size: 0.15, color: '#ffd27a', add: true });
           }
         }
       }
       this.propCollide(c);
     }
-    // Landen / an der Oberfläche bleiben (über scharfe Kuppen hebt das Auto ab)
-    const g2 = W.groundAt(c.x, c.y, c.z);
+    // Landen / an der Oberfläche bleiben (mit Swept-Z gegen Durchfallen auf Dächern/Brücken/Rampen)
+    const g2 = W.groundAt(c.x, c.y, c.z, prevZ);
+    c.groundZ = g2; c.groundKind = W.groundKind;
     if (c.z < g2) {
       if (c.airT > 0.25 && (c.pitch || c.flipAcc)) this.landFlip(c);
       c.z = g2;
-      const [s2x, s2y] = W.groundKind === 'roof' ? [0, 0] : W.slopeAt(c.x, c.y, c.z);
+      const [s2x, s2y] = W.slopeAt(c.x, c.y, c.z);
       const sv = s2x * c.vx + s2y * c.vy;
       if (c.vz < sv) c.vz = sv;
-    } else if (c.onGround && c.z - g2 < 0.18 + 0.05 * moved) c.z = g2;
-    else if (c.onGround) { if (c.vz > 3.5) c.vz = 3.5; c.airLock = 0.12; }   // über Kuppen nur sanft abheben (Federung)
+    } else if (c.onGround && c.z - g2 < 0.22 + 0.06 * moved) {
+      c.z = g2;
+    } else if (c.onGround) {
+      if (c.vz > 3.5) c.vz = 3.5;
+      c.airLock = 0.08;   // über Kuppen nur sanft abheben (Federung)
+    }
     // Wasser
     if (surfWater) {
       c.sinkT += dt; c.vx *= 0.9; c.vy *= 0.9;
@@ -849,24 +1057,21 @@ class Game {
     }
     this.dropMine(c, dt, playing);
   }
-  // Landung nach Sprung: Saltos zählen, schiefe Landung bremst und kostet etwas Panzerung
+  // Landung nach Sprung: Saltos zählen, bei schräger Landung kein Selbstschaden mehr
   landFlip(c) {
-    if (c.dodgeT > 0) { c.dodgeT = 0; c.pitch = 0; c.pitchV = 0; c.flipAcc = 0; return; }   // Ausweichsprung landet immer sauber
-    const off = angNorm(c.pitch || 0), flips = Math.floor((Math.abs(c.flipAcc || 0) + 0.6) / (Math.PI * 2));
-    if (Math.abs(off) > 1.0) {
-      c.vx *= 0.35; c.vy *= 0.35;
-      if (this.isClient && c === this.player) c.crashAcc += c.st.hp * 0.12;
-      else this.damage(c, c.st.hp * 0.12, null, 'crash');
-      Sound.play('clank', this.vol(c.x, c.y));
-      if (c.isPlayer) { this.say('Bruchlandung!', '#ff8c7f', 1, false); this.shake = Math.min(1, this.shake + 0.5); }
+    if (c.dodgeT > 0) { c.dodgeT = 0; c.dodgeRollDir = 0; c.pitch = 0; c.pitchV = 0; c.roll = 0; c.rollV = 0; c.flipAcc = 0; return; }   // Ausweichsprung landet immer sauber
+    const off = angNorm(c.pitch || 0), flips = Math.floor((Math.abs(c.flipAcc || 0) + 0.75) / (Math.PI * 2));
+    if (Math.abs(off) > 1.45 && !c.boosting) {
+      c.vx *= 0.78; c.vy *= 0.78;
+      Sound.play('clank', this.vol(c.x, c.y) * 0.6);
     } else if (flips > 0) {
       const n = Math.min(flips, 3), txt = (c.flipAcc > 0 ? 'Rückwärtssalto' : 'Salto') + (n > 1 ? ' ×' + n : '') + '!';
-      c.boost = Math.min(c.st.boost, c.boost + 0.8 * n);   // Salto füllt Nitro auf
+      c.boost = Math.min(c.st.boost, c.boost + 0.85 * n);   // Salto füllt Nitro auf
       if (c.isPlayer) { this.say(txt + ' +Nitro', '#ffe66d', 1.2, false); Sound.play('pickup'); }
       if (this.isClient && c === this.player) { if (typeof Net !== 'undefined') Net.send({ t: 'flip', n }); }
       else this.addXp(c, 25 * n);
     }
-    c.pitch = 0; c.pitchV = 0; c.flipAcc = 0;
+    c.pitch = 0; c.pitchV = 0; c.roll = 0; c.rollV = 0; c.flipAcc = 0; c.dodgeRollDir = 0;
   }
   dropMine(c, dt, playing) {
     c.mineCd = Math.max(0, c.mineCd - dt);
@@ -990,14 +1195,16 @@ class Game {
   // ---------------- Waffen ----------------
   weapons(c, dt) {
     const inp = c.input;
-    const turnRate = c.human ? 40 : 7;
-    const diff = angNorm(inp.aim - c.turret);
-    c.turret += clamp(diff, -turnRate * dt, turnRate * dt);
+    const diff = this.opts.difficulty ?? 1;
+    const turnRate = c.human ? 40 : [3.2, 4.2, 5.2][diff];
+    const diffAng = angNorm(inp.aim - c.turret);
+    c.turret += clamp(diffAng, -turnRate * dt, turnRate * dt);
     const pw = clamp(inp.pitch || 0, -0.7, 1.5);
     c.tpitch = (c.tpitch || 0) + clamp(pw - (c.tpitch || 0), -turnRate * 0.5 * dt, turnRate * 0.5 * dt);
     c.fireCd -= dt;
     if (inp.fire && c.fireCd <= 0 && c.alive) {
-      c.fireCd = 1 / c.st.rate;
+      const rateMul = c.bot ? [1.55, 1.32, 1.15][diff] : 1;
+      c.fireCd = (1 / c.st.rate) * rateMul;
       this.fire(c);
     }
   }
@@ -1005,19 +1212,21 @@ class Game {
     const w = c.w;
     const sh = c.shape;
     const px = c.x + Math.cos(c.a) * sh.turret, py = c.y + Math.sin(c.a) * sh.turret;
-    const bl = w === WEAPONS.cannon ? 3 : 2;
+    const bl = (w === WEAPONS.cannon || w === WEAPONS.railgun) ? 3 : 2;
     const mx = px + Math.cos(c.turret) * bl, my = py + Math.sin(c.turret) * bl;
     const pt = c.tpitch || 0, cp = Math.cos(pt);
+    const diff = this.opts.difficulty ?? 1;
+    const botSpread = c.bot ? Math.max(w.spread * [1.85, 1.45, 1.2][diff], [0.09, 0.065, 0.045][diff]) : w.spread;
     for (let i = 0; i < w.count; i++) {
-      const ang = c.turret + (Math.random() - 0.5) * 2 * w.spread;
+      const ang = c.turret + (Math.random() - 0.5) * 2 * botSpread;
       const sp = w.speed * (w.count > 1 ? rand(0.85, 1.1) : 1);
       const bl = {
-        x: mx, y: my, z: c.z + 1.1 + Math.sin(pt) * 1.2, vz: Math.abs(pt) > 0.03 ? Math.sin(pt + (Math.random() - 0.5) * w.spread) * sp : 0,
+        x: mx, y: my, z: c.z + 1.1 + Math.sin(pt) * 1.2, vz: Math.abs(pt) > 0.03 ? Math.sin(pt + (Math.random() - 0.5) * botSpread) * sp : 0,
         vx: Math.cos(ang) * sp * cp + c.vx * 0.35, vy: Math.sin(ang) * sp * cp + c.vy * 0.35,
         life: w.life * (w.count > 1 ? rand(0.8, 1.1) : 1), dmg: c.st.dmg, owner: c, team: c.team, w, cosmetic: this.isClient,
       };
       this.bullets.push(bl);
-      if (this.isHost) this.events.push(['s', c.id, r2(bl.x), r2(bl.y), r2(bl.z), r1(bl.vx), r1(bl.vy), r2(bl.life), c.def.weapon, r1(bl.vz)]);
+      if (this.isHost) this.events.push(['s', c.id, r2(bl.x), r2(bl.y), r2(bl.z), r1(bl.vx), r1(bl.vy), r2(bl.life), c.weaponId || c.def.weapon, r1(bl.vz)]);
     }
     Sound.play(w.sound, this.vol(c.x, c.y) * (c.isPlayer ? 1 : 0.7));
     this.particles.add({ x: mx, y: my, vx: c.vx, vy: c.vy, life: 0.06, max: 0.06, size: w.splash ? 1.4 : 0.7, color: '#ffe9a8', add: true });
@@ -1168,11 +1377,12 @@ class Game {
   kill(c, by, kind) {
     if (this.isClient || !c.alive) return;
     c.alive = false; c.hp = 0; c.deaths++;
-    c.respawnT = 3.5;
+    c.respawnT = this.gameMode === 'gungame' ? 2.4 : 3.5;
     c.killedBy = by;
     this.boom(c.x, c.y, 1.5, true);
-    for (let i = 0; i < 10; i++) this.particles.add({ type: 'debris', x: c.x, y: c.y, z: 1, vz: rand(4, 12), g: 25, vx: rand(-12, 12), vy: rand(-12, 12), life: 2, max: 2, size: rand(0.5, 1.1), color: i % 3 ? TEAM[c.team].dark : '#333', rot: rand(0, 6), vr: rand(-12, 12), fade: false });
-    this.dropFlag(c, kind === 'water');
+    const tc = TEAM[c.team % TEAM.length];
+    for (let i = 0; i < 10; i++) this.particles.add({ type: 'debris', x: c.x, y: c.y, z: 1, vz: rand(4, 12), g: 25, vx: rand(-12, 12), vy: rand(-12, 12), life: 2, max: 2, size: rand(0.5, 1.1), color: i % 3 ? tc.dark : '#333', rot: rand(0, 6), vr: rand(-12, 12), fade: false });
+    if (this.gameMode === 'ctf') this.dropFlag(c, kind === 'water');
     if (by) {
       by.kills++; by.score += 10;
       if (by.human) this.earn(REWARD.kill, c.x, c.y, '', by);
@@ -1181,9 +1391,35 @@ class Game {
       for (const [o, t] of c.hitBy) {
         if (o !== by && o.alive !== undefined && o.team !== c.team && now - t < 6000) { o.assists++; o.score += 4; if (o.human) this.earn(REWARD.assist, c.x, c.y, 'Assist', o); this.addXp(o, XP.assist); }
       }
+      if (this.gameMode === 'tdm' && by.team !== c.team) {
+        this.score[by.team % 2]++;
+        by.caps++;
+      } else if (this.gameMode === 'gungame' && by !== c) {
+        by.caps++;
+        if (by.ggTier >= GUNGAME_TIERS.length - 1) {
+          by.ggTier = GUNGAME_TIERS.length;
+          by.score += 35;
+          this.log({ a: by, b: c, kind });
+          if (c.isPlayer) Sound.engineStop();
+          this.endGame();
+          return;
+        } else {
+          by.ggTier++;
+          by.setWeapon(GUNGAME_TIERS[by.ggTier]);
+          if (by.isPlayer) {
+            this.say(`🔫 Waffen-Upgrade (${by.ggTier + 1}/${GUNGAME_TIERS.length}): ${by.w.name}!`, '#ffe66d', 2.0, false);
+            Sound.play('buy');
+          } else if (by.ggTier === GUNGAME_TIERS.length - 1) {
+            this.say(`⚠️ ${by.name} hat die Goldene Railgun erreicht!`, '#ff8c7f', 2.2, false);
+          }
+        }
+      }
     }
     this.log({ a: by, b: c, kind });
     if (c.isPlayer) Sound.engineStop();
+    if (this.gameMode === 'tdm' && by && this.score[by.team % 2] >= this.targetScore) {
+      this.endGame();
+    }
   }
 
   updateMines(dt) {
@@ -1224,7 +1460,7 @@ class Game {
     if (msg) this.log({ text: 'Flagge ist zurück in der Basis', flagTeam: f.team });
   }
   updateFlags(dt) {
-    if (this.state !== 'play') return;
+    if (this.state !== 'play' || this.gameMode !== 'ctf') return;
     const bases = this.world.bases;
     for (const f of this.flags) {
       if (f.state === 'carried') { f.x = f.carrier.x; f.y = f.carrier.y; f.z = f.carrier.z; }
@@ -1256,7 +1492,7 @@ class Game {
         this.log({ text: 'hat gepunktet! 🏁', a: c, flagTeam: f.team, cap: true, fx: 'cap' });
         if (c.human) this.earn(REWARD.capture, c.x, c.y, 'Punkt!', c);
         this.addXp(c, XP.capture);
-        if (this.score[c.team] >= this.opts.capLimit) this.endGame();
+        if (this.score[c.team] >= this.targetScore) this.endGame();
       }
     }
   }
@@ -1285,11 +1521,19 @@ class Game {
     }
   }
 
+  computeResult() {
+    if (this.gameMode === 'gungame') {
+      const sorted = [...this.cars].sort((a, b) => (b.ggTier || 0) - (a.ggTier || 0) || b.kills - a.kills || a.deaths - b.deaths);
+      return sorted[0] === this.player ? 'win' : 'lose';
+    }
+    const me = this.player.team % 2, s = this.score;
+    return s[me] > s[1 - me] ? 'win' : s[me] < s[1 - me] ? 'lose' : 'draw';
+  }
+
   endGame() {
     if (this.state === 'over') return;
     this.state = 'over';
-    const me = this.player.team, s = this.score;
-    const res = s[me] > s[1 - me] ? 'win' : s[me] < s[1 - me] ? 'lose' : 'draw';
+    const res = this.computeResult();
     this.earned += REWARD[res];
     this.result = res;
     this.say(res === 'win' ? 'SIEG!' : res === 'lose' ? 'NIEDERLAGE' : 'UNENTSCHIEDEN', res === 'win' ? '#7dff8a' : res === 'lose' ? '#ff8c7f' : '#fff', 3);
@@ -1306,7 +1550,7 @@ class Game {
       t: 's', n: this.netSeq, st: this.state, tm: r1(this.time), ct: r2(this.countT), sc: this.score,
       c: this.cars.map(c => [c.id, r2(c.x), r2(c.y), r2(c.a), r2(c.turret), r2(c.z), r1(c.vx), r1(c.vy), Math.ceil(c.hp), c.alive ? 1 : 0, c.flag,
         c.boosting ? 1 : 0, c.protect > 0 ? 1 : 0, r1(c.respawnT), c.kills, c.deaths, c.caps, c.returns, c.score, c.earned, c.mines, r2(c.boost),
-        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg, r2(c.pitch || 0), r2(c.tpitch || 0)]),
+        c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg, r2(c.pitch || 0), r2(c.tpitch || 0), c.ggTier || 0]),
       f: this.flags.map(f => [f.state, r1(f.x), r1(f.y), f.carrier ? f.carrier.id : 0, r1(f.dropT), r1(f.z)]),
       pr: this.props.map(p => (p.alive ? 1 : 0)).join(''),
       pk: this.pickups.map(p => [r1(p.x), r1(p.y), p.t, p.active ? 1 : 0]),
@@ -1402,7 +1646,11 @@ class Game {
       const c = Math.ceil(s.ct);
       if (c < this.lastCount && c > 0) { this.lastCount = c; Sound.play('countdown'); this.say(String(c), '#ffe66d', 0.9); }
     }
-    if (prev === 'countdown' && s.st === 'play') { Sound.play('go'); this.say('LOS! Hol dir die Flagge!', '#7dff8a', 1.6); }
+    if (prev === 'countdown' && s.st === 'play') {
+      Sound.play('go');
+      const goMsg = this.gameMode === 'gungame' ? 'LOS! Gun Game – jede Eliminierung rüstet auf!' : this.gameMode === 'tdm' ? 'LOS! Team-Deathmatch!' : 'LOS! Hol dir die Flagge!';
+      this.say(goMsg, '#7dff8a', 1.8);
+    }
     if (s.st === 'over' && prev !== 'over') this.clientEnd(); else if (prev !== 'over') this.state = s.st;
     for (const a of s.c) {
       const c = this.byId.get(a[0]); if (!c) continue;
@@ -1411,6 +1659,10 @@ class Game {
       c.kills = a[14]; c.deaths = a[15]; c.caps = a[16]; c.returns = a[17]; c.score = a[18]; c.earned = a[19]; c.mines = a[20];
       c.killedBy = a[22] ? this.byId.get(a[22]) : null;
       c.xp = a[25] || 0;
+      if (a[30] !== undefined && this.gameMode === 'gungame' && a[30] !== c.ggTier) {
+        c.ggTier = a[30];
+        c.setWeapon(GUNGAME_TIERS[Math.min(c.ggTier, GUNGAME_TIERS.length - 1)]);
+      }
       if (a[27] !== undefined) {
         const u = String(a[27]);
         const nu = { spd: +u[0] || 0, arm: +u[1] || 0, dmg: +u[2] || 0 };
@@ -1476,8 +1728,7 @@ class Game {
   }
   clientEnd() {
     this.state = 'over';
-    const me = this.player.team, s = this.score;
-    const res = s[me] > s[1 - me] ? 'win' : s[me] < s[1 - me] ? 'lose' : 'draw';
+    const res = this.computeResult();
     this.endBonus = REWARD[res];
     this.result = res;
     this.say(res === 'win' ? 'SIEG!' : res === 'lose' ? 'NIEDERLAGE' : 'UNENTSCHIEDEN', res === 'win' ? '#7dff8a' : res === 'lose' ? '#ff8c7f' : '#fff', 3);
@@ -1489,35 +1740,58 @@ class Game {
   think(c, dt) {
     const B = c.bot, W = this.world, inp = c.input;
     B.thinkT -= dt; B.hurtT = Math.max(0, B.hurtT - dt); B.jumpT -= dt; B.mineT -= dt;
-    const diff = this.opts.difficulty;
+    B.acqT = Math.max(0, (B.acqT || 0) - dt);
+    B.firePauseT = Math.max(0, (B.firePauseT || 0) - dt);
+    B.swayPh = (B.swayPh || 0) + dt * 2.1;
+    const diff = this.opts.difficulty ?? 1;
     if (B.thinkT <= 0) {
-      B.thinkT = 0.18 + Math.random() * 0.08;
-      const my = this.flags[c.team], en = this.flags[1 - c.team], home = W.bases[c.team];
+      B.thinkT = 0.22 + Math.random() * 0.12;
       let goal = null, chase = false;
-      const dHome = Math.sqrt(d2(c.x, c.y, home.x, home.y));
-      if (c.flag >= 0) {
-        // Flaggenträger: heimfahren und dort warten, bis die eigene Flagge zurück ist
-        if (my.state !== 'base' && dHome < 30) {
-          B.roamT -= 0.2;
-          if (!B.roam || B.roamT <= 0 || d2(c.x, c.y, B.roam.x, B.roam.y) < 16) { B.roam = W.randomFreeNear(home.x, home.y, 6, 22); B.roamT = 3; }
+      if (this.gameMode !== 'ctf') {
+        // Team-Deathmatch & Gun Game: aktive Gegner jagen oder zu Reparatur-Pickups fahren
+        let nearestEn = null, bestScore = 1e12;
+        for (const o of this.cars) {
+          if (!o.alive || o.team === c.team) continue;
+          const dd = d2(c.x, c.y, o.x, o.y) * (this.gameMode === 'gungame' && o.ggTier >= GUNGAME_TIERS.length - 2 ? 0.55 : 1);
+          if (dd < bestScore) { bestScore = dd; nearestEn = o; }
+        }
+        if (c.hp < c.st.hp * 0.4) {
+          const hpPick = this.pickups.find(p => p.active && p.t === 0 && d2(c.x, c.y, p.x, p.y) < 130 * 130);
+          if (hpPick) goal = hpPick;
+        }
+        if (!goal && nearestEn) { goal = nearestEn; chase = true; }
+        if (!goal) {
+          B.roamT -= 0.25;
+          if (!B.roam || B.roamT <= 0 || d2(c.x, c.y, B.roam.x, B.roam.y) < 25) { B.roam = W.randomFreeNear(W.w / 2, W.h / 2, 20, 320); B.roamT = 5; }
           goal = B.roam;
-          if (my.state === 'dropped' && d2(c.x, c.y, my.x, my.y) < 60 * 60) goal = my;
-        } else goal = home;
-      } else if (my.state === 'dropped' && (B.role === 'defend' || d2(c.x, c.y, my.x, my.y) < 160 * 160 || en.state === 'carried')) goal = my;
-      else if (my.state === 'carried' && (B.role === 'defend' || en.state === 'carried' || d2(c.x, c.y, my.x, my.y) < 120 * 120)) { goal = my.carrier; chase = true; }
-      else if (B.role === 'attack') {
-        if (en.state === 'carried') {
-          // eskortieren oder gegnerische Verteidiger jagen
-          const carrier = en.carrier;
-          goal = d2(c.x, c.y, carrier.x, carrier.y) > 30 * 30 ? carrier : home;
-        } else goal = en;
+        }
       } else {
-        // Verteidiger: in der Nähe der Basis patrouillieren
-        B.roamT -= 0.2;
-        if (!B.roam || B.roamT <= 0 || d2(c.x, c.y, B.roam.x, B.roam.y) < 25) { B.roam = W.randomFreeNear(home.x, home.y, 8, 32); B.roamT = 5; }
-        goal = B.roam;
-        const threat = this.findTarget(c, 45);
-        if (threat && d2(threat.x, threat.y, home.x, home.y) < 60 * 60) goal = threat;
+        const my = this.flags[c.team], en = this.flags[1 - c.team], home = W.bases[c.team];
+        const dHome = Math.sqrt(d2(c.x, c.y, home.x, home.y));
+        if (c.flag >= 0) {
+          // Flaggenträger: heimfahren und dort warten, bis die eigene Flagge zurück ist
+          if (my.state !== 'base' && dHome < 30) {
+            B.roamT -= 0.2;
+            if (!B.roam || B.roamT <= 0 || d2(c.x, c.y, B.roam.x, B.roam.y) < 16) { B.roam = W.randomFreeNear(home.x, home.y, 6, 22); B.roamT = 3; }
+            goal = B.roam;
+            if (my.state === 'dropped' && d2(c.x, c.y, my.x, my.y) < 60 * 60) goal = my;
+          } else goal = home;
+        } else if (my.state === 'dropped' && (B.role === 'defend' || d2(c.x, c.y, my.x, my.y) < 160 * 160 || en.state === 'carried')) goal = my;
+        else if (my.state === 'carried' && (B.role === 'defend' || en.state === 'carried' || d2(c.x, c.y, my.x, my.y) < 120 * 120)) { goal = my.carrier; chase = true; }
+        else if (B.role === 'attack') {
+          if (en.state === 'carried') {
+            // eskortieren oder gegnerische Verteidiger jagen
+            const carrier = en.carrier;
+            goal = d2(c.x, c.y, carrier.x, carrier.y) > 30 * 30 ? carrier : home;
+          } else goal = en;
+        } else {
+          // Verteidiger: in der Nähe der Basis patrouillieren
+          B.roamT -= 0.2;
+          if (!B.roam || B.roamT <= 0 || d2(c.x, c.y, B.roam.x, B.roam.y) < 25) { B.roam = W.randomFreeNear(home.x, home.y, 8, 32); B.roamT = 5; }
+          goal = B.roam;
+          const threat = this.findTarget(c, 45);
+          if (threat && d2(threat.x, threat.y, home.x, home.y) < 60 * 60) goal = threat;
+        }
       }
       B.goal = goal; B.chase = chase;
       // Weg
@@ -1538,9 +1812,18 @@ class Game {
         B.wp = B.field ? W.waypoint(B.field, c.x, c.y, 10) : { x: gx, y: gy, dist: dGoal };
         if (!B.wp) B.wp = { x: gx, y: gy, dist: dGoal };
       }
-      // Ziel für Waffe
-      B.target = this.findTarget(c, c.range * 1.05);
-      B.aimErr = (Math.random() - 0.5) * [0.35, 0.18, 0.08][diff];
+      // Ziel für Waffe (mit fairer Zielerfassungs-Verzögerung bei neuem Gegner)
+      const nextTarget = this.findTarget(c, c.range * 0.96);
+      if (nextTarget !== B.target) {
+        if (nextTarget) {
+          const toAng = Math.atan2(nextTarget.y - c.y, nextTarget.x - c.x);
+          const behind = Math.abs(angNorm(toAng - c.turret)) > 1.35 ? 0.24 : 0;
+          B.acqT = [0.68, 0.46, 0.28][diff] + rand(0, 0.22) + behind;
+        }
+        B.target = nextTarget;
+      }
+      B.aimErr = (Math.random() - 0.5) * [0.52, 0.34, 0.20][diff];
+      B.pitchErr = (Math.random() - 0.5) * [0.14, 0.09, 0.05][diff];
     }
     // Fahren
     const wp = B.wp || { x: c.x, y: c.y, dist: 0 };
@@ -1566,16 +1849,17 @@ class Game {
       if (inp.thr > 0.3 && sp < 1.6 && this.state === 'play') { B.stuckT += dt; if (B.stuckT > 0.8) { B.stuckT = 0; B.revT = 0.7 + Math.random() * 0.4; B.revSteer = Math.random() < 0.5 ? -1 : 1; } }
       else B.stuckT = Math.max(0, B.stuckT - dt);
     }
-    inp.boost = c.onGround && (c.flag >= 0 || (wp.dist > 50 && B.role === 'attack') || B.chase) && Math.abs(da) < 0.25 && c.boost > c.st.boost * 0.3 && sp > 8;
+    // Zurückhaltenderer Einsatz von Nitro durch Bots
+    inp.boost = c.onGround && (c.flag >= 0 || (wp.dist > 65 && B.role === 'attack') || B.chase) && Math.abs(da) < 0.2 && c.boost > c.st.boost * 0.52 && sp > 10;
     // in der Luft Richtung Fluss: mit Nitro rübergleiten statt ins Wasser zu fallen
     if (!c.onGround && c.boost > 0.25 && (W.waterAt(c.x + c.vx * 0.9, c.y + c.vy * 0.9) !== null || W.waterAt(c.x, c.y) !== null)) inp.boost = true;
     inp.jump = false;
     if (B.jumpT <= 0 && c.onGround) {
-      if ((B.hurtT > 0 && Math.random() < 0.04 * (diff + 1)) || (B.stuckT > 0.5)) {
+      if ((B.hurtT > 0 && Math.random() < 0.03 * (diff + 1)) || (B.stuckT > 0.5)) {
         // nicht in Flussnähe springen (sonst landet der Bot im Wasser)
         let wet = false;
         for (let k = 0; k < 32 && !wet; k++) { const rr2 = [15, 30, 45, 60][k >> 3]; wet = W.waterAt(c.x + Math.cos(k * 0.785) * rr2, c.y + Math.sin(k * 0.785) * rr2) !== null; }
-        if (!wet) { inp.jump = true; B.jumpT = 1.5; } else B.jumpT = 1;
+        if (!wet) { inp.jump = true; B.jumpT = 1.8; } else B.jumpT = 1;
       }
     }
     // Minen legen, wenn verfolgt
@@ -1583,20 +1867,29 @@ class Game {
     if (B.mineT <= 0 && c.mines > 0 && (c.flag >= 0 || B.role === 'defend')) {
       for (const o of this.cars) if (o.alive && o.team !== c.team && d2(o.x, o.y, c.x, c.y) < 22 * 22) {
         const behind = Math.cos(Math.atan2(o.y - c.y, o.x - c.x) - c.a) < -0.5;
-        if (behind && Math.random() < 0.3) { inp.mine = true; B.mineT = 3; }
+        if (behind && Math.random() < 0.25) { inp.mine = true; B.mineT = 3.5; }
         break;
       }
     }
-    // Zielen
+    // Zielen mit realistischer Streuung, Zielerfassungs-Verzögerung und Feuerpausen
     const t = B.target;
     if (t && t.alive) {
-      const tt = Math.sqrt(d2(c.x, c.y, t.x, t.y)) / c.w.speed;
-      const lead = diff === 0 ? 0.3 : diff === 1 ? 0.7 : 1;
-      inp.aim = Math.atan2(t.y + t.vy * tt * lead - c.y, t.x + t.vx * tt * lead - c.x) + B.aimErr;
       const dd = Math.sqrt(d2(c.x, c.y, t.x, t.y));
-      inp.fire = dd < c.range * 0.95 && Math.abs(angNorm(inp.aim - c.turret)) < (c.w.splash ? 0.2 : 0.14);
+      const tt = dd / c.w.speed;
+      const lead = [0.15, 0.42, 0.68][diff];
+      const sway = Math.sin(B.swayPh) * [0.16, 0.11, 0.06][diff] + (t.onGround === false ? (Math.random() - 0.5) * 0.18 : 0);
+      inp.aim = Math.atan2(t.y + t.vy * tt * lead - c.y, t.x + t.vx * tt * lead - c.x) + B.aimErr + sway;
+      const canShoot = B.acqT <= 0 && B.firePauseT <= 0 && dd < c.range * 0.9 && Math.abs(angNorm(inp.aim - c.turret)) < (c.w.splash ? 0.18 : 0.13);
+      if (canShoot) {
+        B.burstT = (B.burstT ?? 1.4) - dt;
+        if (B.burstT <= 0) {
+          B.firePauseT = [0.75, 0.55, 0.38][diff] + rand(0, 0.25);
+          B.burstT = [1.1, 1.4, 1.75][diff] + rand(0, 0.4);
+          inp.fire = false;
+        } else inp.fire = true;
+      } else inp.fire = false;
       const dz = (t.z + 0.9) - (c.z + 1.1);
-      inp.pitch = Math.abs(dz) > 1.8 ? clamp(Math.atan2(dz, Math.max(dd, 1)), -0.6, 0.9) : 0;
+      inp.pitch = Math.abs(dz) > 1.8 ? clamp(Math.atan2(dz, Math.max(dd, 1)) + (B.pitchErr || 0), -0.6, 0.9) : 0;
     } else { inp.aim = c.a; inp.fire = false; inp.pitch = 0; }
   }
 
@@ -1667,7 +1960,7 @@ class Game {
     for (const m of this.mines) {
       if (!vis(m.x, m.y, 2)) continue;
       g.fillStyle = '#333'; g.beginPath(); g.arc(m.x, m.y, 0.7, 0, 7); g.fill();
-      g.fillStyle = m.arm > 0 ? '#999' : (Math.sin(time * 10) > 0 ? TEAM[m.team].color : '#222');
+      g.fillStyle = m.arm > 0 ? '#999' : (Math.sin(time * 10) > 0 ? TEAM[m.team % TEAM.length].color : '#222');
       g.beginPath(); g.arc(m.x, m.y, 0.3, 0, 7); g.fill();
     }
     // Kisten
@@ -1682,8 +1975,10 @@ class Game {
       if (p.t === 1) { g.strokeStyle = '#a88a3a'; g.lineWidth = 0.1; for (let i = -2; i <= 2; i++) { g.beginPath(); g.moveTo(i * 0.4, -p.hh); g.lineTo(i * 0.4, p.hh); g.stroke(); } }
       g.restore();
     }
-    // Flaggen am Boden
-    for (const f of this.flags) if (f.state !== 'carried') this.drawFlag(g, f.x, f.y, 0, f.team, time, f.state === 'dropped' ? f.dropT / 25 : -1);
+    // Flaggen am Boden (nur im CTF-Modus)
+    if (this.gameMode === 'ctf') {
+      for (const f of this.flags) if (f.state !== 'carried') this.drawFlag(g, f.x, f.y, 0, f.team, time, f.state === 'dropped' ? f.dropT / 25 : -1);
+    }
     // Schatten + Bodenfahrzeuge
     const ground = [], air = [];
     for (const c of this.cars) if (c.alive && vis(c.x, c.y, 8)) (c.z - c.groundZ > 0.6 ? air : ground).push(c);
@@ -1712,7 +2007,7 @@ class Game {
     this.drawHUD(g, left, top, time);
   }
   drawFlag(g, x, y, z, team, time, timer) {
-    const tm = TEAM[team];
+    const tm = TEAM[team % TEAM.length];
     const k = CAM_H / (CAM_H - 6 - z), cx = this.camR.x, cy = this.camR.y;
     const bx = cx + (x - cx) * (CAM_H / (CAM_H - z)), by = cy + (y - cy) * (CAM_H / (CAM_H - z));
     const tx = cx + (x - cx) * k, ty = cy + (y - cy) * k;
@@ -1738,12 +2033,19 @@ class Game {
     const zr = this.r3d ? c.z : Math.max(0, c.z - this.world.terrain(c.x, c.y));
     const k = CAM_H / (CAM_H - zr - 1);
     const x = cx + (c.x - cx) * k, y = cy + (c.y - cy) * k;
-    const L = c.def.len, Wd = c.def.wid, tm = TEAM[c.team];
+    const L = c.def.len, Wd = c.def.wid, tm = TEAM[c.team % TEAM.length];
     g.save(); g.translate(x, y); g.scale(k, k);
     if (c.protect > 0) { g.globalAlpha = 0.5 + Math.sin(time * 20) * 0.25; }
     g.rotate(c.a);
     const body = tm.color, dark = tm.dark;
-    const wheel = (wx, wy, ww, wh) => { g.fillStyle = '#151515'; g.beginPath(); g.roundRect(wx - ww / 2, wy - wh / 2, ww, wh, 0.15); g.fill(); };
+    const wheel = (wx, wy, ww, wh) => {
+      g.save();
+      g.translate(wx, wy);
+      if (wx > 0) g.rotate((c.steerS || 0) * 0.42);
+      g.fillStyle = '#151515';
+      g.beginPath(); g.roundRect(-ww / 2, -wh / 2, ww, wh, 0.15); g.fill();
+      g.restore();
+    };
     switch (c.def.shape) {
       case 'sport':
         wheel(1.3, -1.0, 1.0, 0.45); wheel(1.3, 1.0, 1.0, 0.45); wheel(-1.35, -1.02, 1.1, 0.5); wheel(-1.35, 1.02, 1.1, 0.5);
@@ -1801,16 +2103,19 @@ class Game {
     // Turm
     g.translate(sh.turret, 0); g.rotate(c.turret - c.a);
     g.fillStyle = '#2a2d31'; g.strokeStyle = '#111'; g.lineWidth = 0.1;
-    switch (c.def.weapon) {
+    switch (c.weaponId || c.def.weapon) {
       case 'mg': g.fillRect(0, -0.32, 1.9, 0.18); g.fillRect(0, 0.14, 1.9, 0.18); g.beginPath(); g.arc(0, 0, 0.55, 0, 7); g.fillStyle = '#3a3f45'; g.fill(); g.stroke(); break;
+      case 'burst': g.fillStyle = '#3a3f45'; g.beginPath(); g.roundRect(-0.55, -0.5, 1.1, 1.0, 0.2); g.fill(); g.stroke(); g.fillStyle = '#1e2228'; for (let i = -1; i <= 1; i++) g.fillRect(0.4, i * 0.24 - 0.08, 1.7, 0.16); break;
       case 'minigun': g.fillStyle = '#3a3f45'; g.fillRect(-0.4, -0.5, 0.9, 1.0); g.fillStyle = '#222'; g.fillRect(0.4, -0.3, 1.7, 0.6); g.fillStyle = '#777'; for (let i = -1; i <= 1; i++) g.fillRect(0.5, i * 0.17 - 0.05, 1.7, 0.1); break;
-      case 'cannon': g.fillStyle = '#4d5359'; g.beginPath(); g.roundRect(-1.0, -0.85, 2.0, 1.7, 0.4); g.fill(); g.stroke(); g.fillStyle = '#2f3337'; g.fillRect(0.8, -0.18, 2.4, 0.36); g.fillRect(3.0, -0.26, 0.35, 0.52); g.fillStyle = TEAM[c.team].color; g.beginPath(); g.arc(-0.2, 0, 0.3, 0, 7); g.fill(); break;
+      case 'cannon': g.fillStyle = '#4d5359'; g.beginPath(); g.roundRect(-1.0, -0.85, 2.0, 1.7, 0.4); g.fill(); g.stroke(); g.fillStyle = '#2f3337'; g.fillRect(0.8, -0.18, 2.4, 0.36); g.fillRect(3.0, -0.26, 0.35, 0.52); g.fillStyle = tm.color; g.beginPath(); g.arc(-0.2, 0, 0.3, 0, 7); g.fill(); break;
+      case 'plasma': g.fillStyle = '#2c3e50'; g.beginPath(); g.arc(0, 0, 0.68, 0, 7); g.fill(); g.stroke(); g.fillStyle = '#5ee7ff'; g.fillRect(0.3, -0.22, 1.7, 0.44); g.beginPath(); g.arc(0, 0, 0.32, 0, 7); g.fill(); break;
       case 'rocket': g.fillStyle = '#4d5359'; g.fillRect(-0.7, -0.75, 1.6, 1.5); g.stroke(); g.fillStyle = '#1b1b1b'; for (let i = 0; i < 4; i++) { g.beginPath(); g.arc(0.85, -0.5 + i * 0.33, 0.13, 0, 7); g.fill(); } g.fillStyle = '#ff7b39'; g.fillRect(-0.7, -0.75, 0.2, 1.5); break;
+      case 'railgun': g.fillStyle = '#d4af37'; g.beginPath(); g.roundRect(-0.85, -0.6, 1.7, 1.2, 0.25); g.fill(); g.stroke(); g.fillStyle = '#ffe97a'; g.fillRect(0.6, -0.26, 2.4, 0.16); g.fillRect(0.6, 0.10, 2.4, 0.16); g.fillStyle = '#7ef9ff'; g.fillRect(0.5, -0.06, 2.3, 0.12); break;
       case 'shotgun': g.fillStyle = '#3a3f45'; g.beginPath(); g.arc(0, 0, 0.6, 0, 7); g.fill(); g.stroke(); g.fillStyle = '#222'; g.fillRect(0.2, -0.27, 1.4, 0.54); g.fillStyle = '#555'; g.fillRect(1.5, -0.32, 0.25, 0.64); break;
     }
     g.restore();
     // getragene Flagge
-    if (c.flag >= 0) this.drawFlag(g, c.x - Math.cos(c.a) * 1.2, c.y - Math.sin(c.a) * 1.2, zr + 1, c.flag, time, -1);
+    if (this.gameMode === 'ctf' && c.flag >= 0) this.drawFlag(g, c.x - Math.cos(c.a) * 1.2, c.y - Math.sin(c.a) * 1.2, zr + 1, c.flag, time, -1);
   }
   drawBullets(g, vis) {
     for (const b of this.bullets) {
@@ -1825,9 +2130,12 @@ class Game {
       } else if (w === WEAPONS.cannon) {
         g.fillStyle = '#222'; g.beginPath(); g.arc(b.x, b.y, 0.45, 0, 7); g.fill();
         g.fillStyle = '#ffb347'; g.beginPath(); g.arc(b.x, b.y, 0.25, 0, 7); g.fill();
+      } else if (w === WEAPONS.plasma) {
+        g.fillStyle = '#5ee7ff'; g.beginPath(); g.arc(b.x, b.y, 0.42, 0, 7); g.fill();
+        g.fillStyle = '#ffffff'; g.beginPath(); g.arc(b.x, b.y, 0.2, 0, 7); g.fill();
       } else {
         const sp = Math.hypot(b.vx, b.vy) || 1;
-        const l = 1.6;
+        const l = w === WEAPONS.railgun ? 3.2 : 1.6;
         g.strokeStyle = w.color; g.lineWidth = w.size * 0.8; g.lineCap = 'round';
         g.beginPath(); g.moveTo(b.x, b.y); g.lineTo(b.x - b.vx / sp * l, b.y - b.vy / sp * l); g.stroke();
       }
@@ -1944,9 +2252,9 @@ class Game {
       const s = this.worldToScreen(c.x, c.y, c.z + 2.6);
       if (s.behind) continue;
       if (s.x < -50 || s.y < -50 || s.x > this.canvas.width + 50 || s.y > this.canvas.height + 50) continue;
-      const tm = TEAM[c.team];
+      const tm = TEAM[c.team % TEAM.length];
       const y = s.y - 26 * D;
-      const name = c.name;
+      const name = this.gameMode === 'gungame' ? `${c.name} [${Math.min((c.ggTier || 0) + 1, GUNGAME_TIERS.length)}]` : c.name;
       const tw = g.measureText(name).width;
       const w = tw + 26 * D;
       const x = s.x - w / 2;
@@ -1959,7 +2267,7 @@ class Game {
       const f = c.hp / c.st.hp;
       g.fillStyle = f > 0.5 ? '#6ee06e' : f > 0.25 ? '#f0c040' : '#ff4b3a';
       g.fillRect(s.x - hw / 2, y + 11 * D, hw * f, 4 * D);
-      if (c.flag >= 0) { g.font = `${14 * D}px sans-serif`; g.fillText('🚩', s.x + w / 2 + 2 * D, y); g.font = `600 ${11 * D}px system-ui, sans-serif`; }
+      if (this.gameMode === 'ctf' && c.flag >= 0) { g.font = `${14 * D}px sans-serif`; g.fillText('🚩', s.x + w / 2 + 2 * D, y); g.font = `600 ${11 * D}px system-ui, sans-serif`; }
     }
   }
   // Minikarte unten rechts: großer Ausschnitt um den Spieler, Norden oben, Basen/Flaggen am Rand, wenn außerhalb
@@ -2000,35 +2308,39 @@ class Game {
     };
     const flagIcon = (x, y, f, s) => {
       g.strokeStyle = '#111'; g.lineWidth = 2 * D; g.beginPath(); g.moveTo(x, y + s * 0.5); g.lineTo(x, y - s); g.stroke();
-      g.fillStyle = TEAM[f.team].color; g.strokeStyle = '#fff'; g.lineWidth = 1.5 * D;
+      g.fillStyle = TEAM[f.team % TEAM.length].color; g.strokeStyle = '#fff'; g.lineWidth = 1.5 * D;
       g.beginPath(); g.moveTo(x, y - s); g.lineTo(x + s * 0.95, y - s * 0.62); g.lineTo(x, y - s * 0.25); g.closePath(); g.fill(); g.stroke();
     };
-    // Basen
-    for (let i = 0; i < 2; i++) {
-      const b = W.bases[i], [sx, sy, out] = clampPt(b.x, b.y), r = (out ? 7 : 10) * D;
-      g.fillStyle = TEAM[i].color; g.strokeStyle = '#fff'; g.lineWidth = 2.5 * D;
-      g.beginPath(); g.arc(sx, sy, r, 0, 7); g.fill(); g.stroke();
-      g.fillStyle = '#fff'; g.font = `900 ${Math.round((out ? 8 : 10) * D)}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText(TEAM[i].short[0], sx, sy + 0.5 * D);
+    // Basen (in CTF und TDM)
+    if (this.gameMode !== 'gungame') {
+      for (let i = 0; i < 2; i++) {
+        const b = W.bases[i], [sx, sy, out] = clampPt(b.x, b.y), r = (out ? 7 : 10) * D;
+        g.fillStyle = TEAM[i].color; g.strokeStyle = '#fff'; g.lineWidth = 2.5 * D;
+        g.beginPath(); g.arc(sx, sy, r, 0, 7); g.fill(); g.stroke();
+        g.fillStyle = '#fff'; g.font = `900 ${Math.round((out ? 8 : 10) * D)}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(TEAM[i].short[0], sx, sy + 0.5 * D);
+      }
     }
-    // Autos (eigenes Team immer, Gegner nur in der Nähe oder mit Flagge)
+    // Autos (eigenes Team immer, Gegner in der Nähe oder im Gun Game / mit Flagge)
     for (const c of this.cars) {
       if (!c.alive || c.isPlayer) continue;
-      const near = c.team === p.team || c.flag >= 0 || d2(c.x, c.y, p.x, p.y) < 90 * 90;
+      const near = c.team === p.team || c.flag >= 0 || this.gameMode !== 'ctf' || d2(c.x, c.y, p.x, p.y) < 90 * 90;
       if (!near) continue;
       const mate = c.team === p.team;
-      arrow(X(c.x), Y(c.y), c.a, 7.5 * D, TEAM[c.team].color, mate ? '#ffffff' : '#111111', 1.6 * D);
+      arrow(X(c.x), Y(c.y), c.a, 7.5 * D, TEAM[c.team % TEAM.length].color, mate ? '#ffffff' : '#111111', 1.6 * D);
     }
-    // Flaggen (getragen: pulsierender Ring um den Träger)
-    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 160);
-    for (const f of this.flags) {
-      const fx = f.carrier ? f.carrier.x : f.x, fy = f.carrier ? f.carrier.y : f.y;
-      const [sx, sy, out] = clampPt(fx, fy);
-      if (f.carrier) {
-        g.strokeStyle = TEAM[f.team].light; g.lineWidth = 2.5 * D; g.globalAlpha = 0.5 + 0.5 * pulse;
-        g.beginPath(); g.arc(sx, sy, (11 + 4 * pulse) * D, 0, 7); g.stroke(); g.globalAlpha = 1;
-      } else if (f.state !== 'base' && pulse < 0.3) continue;   // liegende Flagge blinkt
-      flagIcon(sx + 2 * D, sy - 2 * D, f, (out ? 9 : 12) * D);
+    // Flaggen (nur im CTF-Modus)
+    if (this.gameMode === 'ctf') {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 160);
+      for (const f of this.flags) {
+        const fx = f.carrier ? f.carrier.x : f.x, fy = f.carrier ? f.carrier.y : f.y;
+        const [sx, sy, out] = clampPt(fx, fy);
+        if (f.carrier) {
+          g.strokeStyle = TEAM[f.team % TEAM.length].light; g.lineWidth = 2.5 * D; g.globalAlpha = 0.5 + 0.5 * pulse;
+          g.beginPath(); g.arc(sx, sy, (11 + 4 * pulse) * D, 0, 7); g.stroke(); g.globalAlpha = 1;
+        } else if (f.state !== 'base' && pulse < 0.3) continue;   // liegende Flagge blinkt
+        flagIcon(sx + 2 * D, sy - 2 * D, f, (out ? 9 : 12) * D);
+      }
     }
     // eigener Pfeil obenauf
     if (p && p.alive) arrow(X(p.x), Y(p.y), p.a, 10 * D, '#ffffff', '#000000', 2 * D);
@@ -2044,24 +2356,46 @@ class Game {
     g.textBaseline = 'middle';
     // Punktestand oben
     const cxs = SW / 2;
-    g.fillStyle = 'rgba(10,12,18,0.72)'; g.beginPath(); g.roundRect(cxs - 150 * D, 8 * D, 300 * D, 58 * D, 12 * D); g.fill();
-    g.font = `900 ${30 * D}px system-ui, sans-serif`; g.textAlign = 'center';
-    g.fillStyle = TEAM[0].color; g.fillText(this.score[0], cxs - 45 * D, 32 * D);
-    g.fillStyle = TEAM[1].color; g.fillText(this.score[1], cxs + 45 * D, 32 * D);
-    g.fillStyle = '#ccc'; g.font = `700 ${16 * D}px system-ui, sans-serif`; g.fillText(':', cxs, 31 * D);
+    g.fillStyle = 'rgba(10,12,18,0.72)'; g.beginPath(); g.roundRect(cxs - 155 * D, 8 * D, 310 * D, 58 * D, 12 * D); g.fill();
     const mm = Math.floor(this.time / 60), ss = Math.floor(this.time % 60);
-    g.font = `600 ${13 * D}px system-ui, sans-serif`; g.fillStyle = this.time < 30 ? '#ff8c7f' : '#ddd';
-    g.fillText(`${mm}:${String(ss).padStart(2, '0')}  ·  bis ${this.opts.capLimit}`, cxs, 55 * D);
-    for (let i = 0; i < 2; i++) {
-      const f = this.flags[i];
-      const x = cxs + (i ? 1 : -1) * 112 * D, y = 32 * D;
-      g.font = `${20 * D}px sans-serif`;
-      g.globalAlpha = f.state === 'base' ? 1 : 0.35 + 0.3 * Math.sin(time * 8);
-      g.fillStyle = TEAM[i].color; g.beginPath(); g.moveTo(x - 8 * D, y + 12 * D); g.lineTo(x - 8 * D, y - 13 * D); g.lineTo(x + 12 * D, y - 7 * D); g.lineTo(x - 8 * D, y - 1 * D); g.fill();
-      g.strokeStyle = '#ddd'; g.lineWidth = 2 * D; g.beginPath(); g.moveTo(x - 8 * D, y + 13 * D); g.lineTo(x - 8 * D, y - 13 * D); g.stroke();
-      g.globalAlpha = 1;
-      g.font = `600 ${9 * D}px system-ui, sans-serif`; g.fillStyle = '#bbb';
-      g.fillText(f.state === 'base' ? 'Basis' : f.state === 'carried' ? 'geklaut!' : 'liegt', x + 2 * D, y + 19 * D);
+    if (this.gameMode === 'gungame') {
+      const tier = Math.min((p.ggTier || 0) + 1, GUNGAME_TIERS.length);
+      const leader = [...this.cars].sort((a, b) => (b.ggTier || 0) - (a.ggTier || 0) || b.kills - a.kills)[0];
+      g.font = `800 ${17 * D}px system-ui, sans-serif`; g.textAlign = 'center';
+      g.fillStyle = '#ffe66d';
+      g.fillText(`🔫 Stufe ${tier}/${GUNGAME_TIERS.length}: ${p.w.name}`, cxs, 26 * D);
+      g.font = `600 ${12 * D}px system-ui, sans-serif`; g.fillStyle = this.time < 30 ? '#ff8c7f' : '#ddd';
+      const leadTxt = leader ? `Führung: ${leader.name} (${Math.min((leader.ggTier || 0) + 1, GUNGAME_TIERS.length)}/${GUNGAME_TIERS.length})` : 'Gun Game';
+      g.fillText(`${mm}:${String(ss).padStart(2, '0')}  ·  ${leadTxt}`, cxs, 50 * D);
+    } else {
+      g.font = `900 ${30 * D}px system-ui, sans-serif`; g.textAlign = 'center';
+      g.fillStyle = TEAM[0].color; g.fillText(this.score[0], cxs - 45 * D, 32 * D);
+      g.fillStyle = TEAM[1].color; g.fillText(this.score[1], cxs + 45 * D, 32 * D);
+      g.fillStyle = '#ccc'; g.font = `700 ${16 * D}px system-ui, sans-serif`; g.fillText(':', cxs, 31 * D);
+      g.font = `600 ${13 * D}px system-ui, sans-serif`; g.fillStyle = this.time < 30 ? '#ff8c7f' : '#ddd';
+      const modeGoal = this.gameMode === 'tdm' ? `${this.targetScore} Kills` : `${this.targetScore}`;
+      g.fillText(`${mm}:${String(ss).padStart(2, '0')}  ·  bis ${modeGoal}`, cxs, 55 * D);
+      if (this.gameMode === 'ctf') {
+        for (let i = 0; i < 2; i++) {
+          const f = this.flags[i];
+          const x = cxs + (i ? 1 : -1) * 112 * D, y = 32 * D;
+          g.font = `${20 * D}px sans-serif`;
+          g.globalAlpha = f.state === 'base' ? 1 : 0.35 + 0.3 * Math.sin(time * 8);
+          g.fillStyle = TEAM[i].color; g.beginPath(); g.moveTo(x - 8 * D, y + 12 * D); g.lineTo(x - 8 * D, y - 13 * D); g.lineTo(x + 12 * D, y - 7 * D); g.lineTo(x - 8 * D, y - 1 * D); g.fill();
+          g.strokeStyle = '#ddd'; g.lineWidth = 2 * D; g.beginPath(); g.moveTo(x - 8 * D, y + 13 * D); g.lineTo(x - 8 * D, y - 13 * D); g.stroke();
+          g.globalAlpha = 1;
+          g.font = `600 ${9 * D}px system-ui, sans-serif`; g.fillStyle = '#bbb';
+          g.fillText(f.state === 'base' ? 'Basis' : f.state === 'carried' ? 'geklaut!' : 'liegt', x + 2 * D, y + 19 * D);
+        }
+      } else {
+        for (let i = 0; i < 2; i++) {
+          const x = cxs + (i ? 1 : -1) * 108 * D, y = 32 * D;
+          g.font = `800 ${12 * D}px system-ui, sans-serif`; g.fillStyle = TEAM[i].light;
+          g.fillText(TEAM[i].short, x, y - 4 * D);
+          g.font = `600 ${9 * D}px system-ui, sans-serif`; g.fillStyle = '#aaa';
+          g.fillText('⚔️ TDM', x, y + 12 * D);
+        }
+      }
     }
     // Kohle
     g.textAlign = 'left';
@@ -2129,7 +2463,7 @@ class Game {
     const px = 12 * D, py = SH - 76 * D;
     g.textAlign = 'left';
     g.fillStyle = 'rgba(10,12,18,0.72)'; g.beginPath(); g.roundRect(px, py, Math.min(250 * D, bx - 24 * D), 64 * D, 12 * D); g.fill();
-    this.drawFace(g, p.driver.id, px + 32 * D, py + 32 * D, 24 * D, TEAM[p.team].color, p.name);
+    this.drawFace(g, p.driver.id, px + 32 * D, py + 32 * D, 24 * D, TEAM[p.team % TEAM.length].color, p.name);
     if (bx - 24 * D > 120 * D) {
       g.fillStyle = '#fff'; g.font = `700 ${13 * D}px system-ui, sans-serif`;
       g.fillText(p.name, px + 64 * D, py + 15 * D);
@@ -2140,25 +2474,42 @@ class Game {
       g.fillText(p.jumpCd <= 0 ? (touch ? '⬆ Sprung' : '⬆ Sprung [Leer]') : `⬆ ${p.jumpCd.toFixed(1)}s`, px + 64 * D, py + 46 * D);
       g.fillStyle = p.mines > 0 ? '#ffb14d' : '#888';
       g.fillText(`● Minen ${p.mines}` + (touch ? '' : ' [E]'), px + 150 * D, py + 46 * D);
-      if (!touch) { g.fillStyle = p.drifting ? '#ffe66d' : '#888'; g.fillText('↯ Drift [Q]', px + 64 * D, py + 58 * D); }
+      if (!touch) {
+        g.fillStyle = p.drifting ? '#ffe66d' : '#888';
+        g.fillText('↯ Drift [Q]', px + 64 * D, py + 58 * D);
+        const af = !!(this.opts && this.opts.autoFire);
+        g.fillStyle = af ? '#7dff8a' : '#9aa3b2';
+        g.fillText(af ? '🔥 Auto [V]' : '🔫 Feuer [F/V]', px + 142 * D, py + 58 * D);
+      }
     }
-    // Fadenkreuz + Treffermarker
+    // Fadenkreuz + Treffermarker + Magnet-Zielhilfe
     const chase3d = this.r3d && this.camMode === 'chase';
     if (!touch && (chase3d || Input.mouse.moved) && p.alive) {
       const cr = chase3d ? this.crosshair() : Input.mouse;
       const mx = cr.x * this.dpr, my = cr.y * this.dpr;
+      const lock = this.aimLock && this.aimLock.alive;
       if (chase3d) {
         g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 4 * D; g.beginPath();
         for (const [ax, ay] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { g.moveTo(mx + ax * 15 * D, my + ay * 15 * D); g.lineTo(mx + ax * 24 * D, my + ay * 24 * D); }
-        g.stroke(); g.strokeStyle = '#fff'; g.lineWidth = 2 * D; g.stroke();
+        g.stroke(); g.strokeStyle = lock ? '#ff7b6b' : '#fff'; g.lineWidth = 2 * D; g.stroke();
         if (document.pointerLockElement !== this.canvas && this.state !== 'over') {
           g.fillStyle = 'rgba(255,255,255,0.75)'; g.font = `700 ${Math.round(11 * D)}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'top';
-          g.fillText('Klicken = Maus-Blick (Esc gibt die Maus frei)', mx, my + 30 * D);
+          g.fillText('Trackpad/Maus bewegt Blick · Schießen: Klick / [F] / [V] Auto-Feuer', mx, my + 30 * D);
         }
       }
-      const lock = this.aimLock && this.aimLock.alive;
-      g.strokeStyle = lock ? '#ff5a4a' : 'rgba(255,255,255,0.9)'; g.lineWidth = 2 * D;
-      g.beginPath(); g.arc(mx, my, (lock ? 14 : 11) * D, 0, 7); g.stroke();
+      g.strokeStyle = lock ? '#ff5a4a' : 'rgba(255,255,255,0.9)'; g.lineWidth = (lock ? 2.5 : 2) * D;
+      g.beginPath(); g.arc(mx, my, (lock ? 15 : 11) * D, 0, 7); g.stroke();
+      // Magnetischer Zielring um das anvisierte gegnerische Fahrzeug
+      if (lock) {
+        const ls = this.worldToScreen(this.aimLock.x, this.aimLock.y, this.aimLock.z + 0.95);
+        if (!ls.behind) {
+          g.save();
+          g.strokeStyle = 'rgba(255,90,74,0.85)'; g.lineWidth = 2 * D;
+          const rr = 16 * D;
+          g.beginPath(); g.arc(ls.x, ls.y, rr, 0, 7); g.stroke();
+          g.restore();
+        }
+      }
       // Höhenwinkel des Turms anzeigen (▲ nach oben / ▼ nach unten)
       const tp = p.tpitch || 0;
       if (Math.abs(tp) > 0.05) { g.fillStyle = tp > 0 ? '#9fe0ff' : '#ffd28a'; g.font = `800 ${Math.round(11 * D)}px system-ui, sans-serif`; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText((tp > 0 ? '▲ ' : '▼ ') + Math.round(Math.abs(tp) * 57.3) + '°', mx + 17 * D, my - 12 * D); }
@@ -2188,7 +2539,7 @@ class Game {
       if (f.text) {
         parts.push({ t: f.text, c: f.cap ? '#ffe66d' : '#ddd' });
         if (f.a) parts.push({ face: f.a });
-        else parts.push({ t: TEAM[f.flagTeam].name + ':', c: TEAM[f.flagTeam].light });
+        else parts.push({ t: TEAM[(f.flagTeam || 0) % TEAM.length].name + ':', c: TEAM[(f.flagTeam || 0) % TEAM.length].light });
       } else {
         parts.push({ face: f.b });
         parts.push({ t: f.kind === 'water' ? '🌊' : f.kind === 'boom' ? '💥' : f.kind === 'ram' ? '🚗💨' : f.kind === 'stomp' ? '⬇️' : f.kind === 'crash' ? '🧱' : '🔫', c: '#fff' });
@@ -2198,10 +2549,11 @@ class Game {
       g.fillStyle = 'rgba(10,12,18,0.6)'; g.beginPath(); g.roundRect(x - wBox, fy - 11 * D, wBox + 6 * D, 22 * D, 8 * D); g.fill();
       for (const q of parts) {
         if (q.face) {
-          g.fillStyle = TEAM[q.face.team].light;
+          const qt = TEAM[q.face.team % TEAM.length];
+          g.fillStyle = qt.light;
           g.fillText(q.face.name, x, fy);
           x -= g.measureText(q.face.name).width + 12 * D;
-          this.drawFace(g, q.face.driver.id, x, fy, 8 * D, TEAM[q.face.team].color, q.face.name);
+          this.drawFace(g, q.face.driver.id, x, fy, 8 * D, qt.color, q.face.name);
           x -= 14 * D;
         } else { g.fillStyle = q.c; g.fillText(q.t, x, fy); x -= g.measureText(q.t).width + 8 * D; }
       }
@@ -2210,34 +2562,36 @@ class Game {
     }
     // Minikarte: großer Ausschnitt um den Spieler (Norden oben), kontrastreich
     this.drawMinimap(g, SW, SH, D, touch, p);
-    // Pfeile zu Flaggen außerhalb des Bildes
-    for (const f of this.flags) {
-      if (f.carrier && f.carrier.isPlayer) continue;
-      const s = this.worldToScreen(f.x, f.y);
-      if (s.behind) { s.x = SW - s.x; s.y = SH * 3; }
-      const mrg = 50 * D;
-      if (s.x > mrg && s.y > mrg && s.x < SW - mrg && s.y < SH - mrg) continue;
-      if (f.team === p.team && f.state === 'base') continue;
-      const ang = Math.atan2(s.y - SH / 2, s.x - SW / 2);
-      const ex = clamp(s.x, mrg, SW - mrg), ey = clamp(s.y, mrg + 40 * D, SH - 130 * D);
-      g.save(); g.translate(ex, ey); g.rotate(ang);
-      g.fillStyle = TEAM[f.team].color; g.strokeStyle = '#fff'; g.lineWidth = 2 * D;
-      g.beginPath(); g.moveTo(18 * D, 0); g.lineTo(-6 * D, -11 * D); g.lineTo(-2 * D, 0); g.lineTo(-6 * D, 11 * D); g.closePath(); g.fill(); g.stroke();
-      g.restore();
-      g.font = `${14 * D}px sans-serif`; g.textAlign = 'center';
-      g.fillText('🚩', ex - Math.cos(ang) * 22 * D, ey - Math.sin(ang) * 22 * D);
-    }
-    // Basis-Pfeil, wenn Spieler die Flagge trägt
-    if (p.flag >= 0) {
-      const b = this.world.bases[p.team];
-      const s = this.worldToScreen(b.x, b.y);
-      if (s.behind) { s.x = SW - s.x; s.y = SH * 3; }
-      const ang = Math.atan2(s.y - SH / 2, s.x - SW / 2);
-      const r = Math.min(SW, SH) * 0.16;
-      g.save(); g.translate(SW / 2 + Math.cos(ang) * r, SH / 2 + Math.sin(ang) * r); g.rotate(ang);
-      g.globalAlpha = 0.6 + 0.3 * Math.sin(time * 6);
-      g.fillStyle = '#ffe66d'; g.beginPath(); g.moveTo(22 * D, 0); g.lineTo(-8 * D, -14 * D); g.lineTo(-2 * D, 0); g.lineTo(-8 * D, 14 * D); g.closePath(); g.fill();
-      g.restore(); g.globalAlpha = 1;
+    // Pfeile zu Flaggen außerhalb des Bildes (nur im CTF-Modus)
+    if (this.gameMode === 'ctf') {
+      for (const f of this.flags) {
+        if (f.carrier && f.carrier.isPlayer) continue;
+        const s = this.worldToScreen(f.x, f.y);
+        if (s.behind) { s.x = SW - s.x; s.y = SH * 3; }
+        const mrg = 50 * D;
+        if (s.x > mrg && s.y > mrg && s.x < SW - mrg && s.y < SH - mrg) continue;
+        if (f.team === p.team && f.state === 'base') continue;
+        const ang = Math.atan2(s.y - SH / 2, s.x - SW / 2);
+        const ex = clamp(s.x, mrg, SW - mrg), ey = clamp(s.y, mrg + 40 * D, SH - 130 * D);
+        g.save(); g.translate(ex, ey); g.rotate(ang);
+        g.fillStyle = TEAM[f.team % TEAM.length].color; g.strokeStyle = '#fff'; g.lineWidth = 2 * D;
+        g.beginPath(); g.moveTo(18 * D, 0); g.lineTo(-6 * D, -11 * D); g.lineTo(-2 * D, 0); g.lineTo(-6 * D, 11 * D); g.closePath(); g.fill(); g.stroke();
+        g.restore();
+        g.font = `${14 * D}px sans-serif`; g.textAlign = 'center';
+        g.fillText('🚩', ex - Math.cos(ang) * 22 * D, ey - Math.sin(ang) * 22 * D);
+      }
+      // Basis-Pfeil, wenn Spieler die Flagge trägt
+      if (p.flag >= 0) {
+        const b = this.world.bases[p.team % this.world.bases.length];
+        const s = this.worldToScreen(b.x, b.y);
+        if (s.behind) { s.x = SW - s.x; s.y = SH * 3; }
+        const ang = Math.atan2(s.y - SH / 2, s.x - SW / 2);
+        const r = Math.min(SW, SH) * 0.16;
+        g.save(); g.translate(SW / 2 + Math.cos(ang) * r, SH / 2 + Math.sin(ang) * r); g.rotate(ang);
+        g.globalAlpha = 0.6 + 0.3 * Math.sin(time * 6);
+        g.fillStyle = '#ffe66d'; g.beginPath(); g.moveTo(22 * D, 0); g.lineTo(-8 * D, -14 * D); g.lineTo(-2 * D, 0); g.lineTo(-8 * D, 14 * D); g.closePath(); g.fill();
+        g.restore(); g.globalAlpha = 1;
+      }
     }
     // Meldungen
     g.textAlign = 'center';
@@ -2260,7 +2614,7 @@ class Game {
       if (k) {
         const t = 'Abgeschossen von ' + k.name;
         g.fillText(t, SW / 2 + 20 * D, SH * 0.55 + 30 * D);
-        this.drawFace(g, k.driver.id, SW / 2 - g.measureText(t).width / 2 - 8 * D, SH * 0.55 + 30 * D, 18 * D, TEAM[k.team].color, k.name);
+        this.drawFace(g, k.driver.id, SW / 2 - g.measureText(t).width / 2 - 8 * D, SH * 0.55 + 30 * D, 18 * D, TEAM[k.team % TEAM.length].color, k.name);
       } else g.fillText('Totalschaden!', SW / 2, SH * 0.55 + 30 * D);
       g.font = `600 ${15 * D}px system-ui, sans-serif`; g.fillStyle = '#ffe66d';
       g.fillText(`Neustart in ${Math.max(0, p.respawnT).toFixed(1)} s`, SW / 2, SH * 0.55 + 64 * D);
@@ -2301,24 +2655,30 @@ class Game {
     const x = (SW - w) / 2, y = Math.max(70 * D, (SH - h) / 2);
     g.fillStyle = 'rgba(10,12,18,0.85)'; g.beginPath(); g.roundRect(x, y, w, h, 14 * D); g.fill();
     g.textAlign = 'center'; g.fillStyle = '#fff'; g.font = `800 ${16 * D}px system-ui, sans-serif`;
-    g.fillText('Punktetafel', SW / 2, y + 22 * D);
+    const modeTitle = GAME_MODES[this.gameMode] ? `${GAME_MODES[this.gameMode].icon} ${GAME_MODES[this.gameMode].name}` : 'Punktetafel';
+    g.fillText(modeTitle, SW / 2, y + 22 * D);
     const cols = [0.52, 0.64, 0.74, 0.84, 0.94];
     g.font = `600 ${10 * D}px system-ui, sans-serif`; g.fillStyle = '#999';
-    ['Abschüsse', 'Tode', 'Punkte', 'Rettungen', 'Score'].forEach((t, i) => g.fillText(t, x + w * cols[i], y + 44 * D));
+    const col3 = this.gameMode === 'gungame' ? 'Waffen-Stufe' : this.gameMode === 'tdm' ? 'Assists' : 'Punkte';
+    ['Abschüsse', 'Tode', col3, 'Rettungen', 'Score'].forEach((t, i) => g.fillText(t, x + w * cols[i], y + 44 * D));
     let ry = y + 64 * D;
-    for (let team = 0; team < 2; team++) {
-      const list = this.cars.filter(c => c.team === team).sort((a, b) => b.score - a.score);
+    const groups = this.gameMode === 'gungame'
+      ? [[...this.cars].sort((a, b) => (b.ggTier || 0) - (a.ggTier || 0) || b.kills - a.kills || b.score - a.score)]
+      : [0, 1].map(team => this.cars.filter(c => c.team === team).sort((a, b) => b.score - a.score));
+    for (const list of groups) {
       for (const c of list) {
+        const tm = TEAM[c.team % TEAM.length];
         if (c.isPlayer) { g.fillStyle = 'rgba(255,255,255,0.08)'; g.fillRect(x + 8 * D, ry - rowH / 2, w - 16 * D, rowH); }
-        this.drawFace(g, c.driver.id, x + 24 * D, ry, 10 * D, TEAM[team].color, c.name);
-        g.textAlign = 'left'; g.fillStyle = TEAM[team].light; g.font = `700 ${12 * D}px system-ui, sans-serif`;
+        this.drawFace(g, c.driver.id, x + 24 * D, ry, 10 * D, tm.color, c.name);
+        g.textAlign = 'left'; g.fillStyle = tm.light; g.font = `700 ${12 * D}px system-ui, sans-serif`;
         const nm = c.name + (c.isPlayer ? ' (Du)' : '');
         g.fillText(nm, x + 40 * D, ry);
         const nw = g.measureText(nm).width;
         g.fillStyle = '#888'; g.font = `500 ${9 * D}px system-ui, sans-serif`;
-        if (w > 520 * D) g.fillText(c.def.name, x + 46 * D + nw, ry);
+        if (w > 520 * D) g.fillText(this.gameMode === 'gungame' ? c.w.name : c.def.name, x + 46 * D + nw, ry);
         g.textAlign = 'center'; g.fillStyle = '#eee'; g.font = `600 ${12 * D}px system-ui, sans-serif`;
-        [c.kills, c.deaths, c.caps, c.returns, c.score].forEach((v, i) => g.fillText(v, x + w * cols[i], ry));
+        const c3Val = this.gameMode === 'gungame' ? `${Math.min((c.ggTier || 0) + 1, GUNGAME_TIERS.length)}/${GUNGAME_TIERS.length}` : this.gameMode === 'tdm' ? c.assists : c.caps;
+        [c.kills, c.deaths, c3Val, c.returns, c.score].forEach((v, i) => g.fillText(v, x + w * cols[i], ry));
         ry += rowH;
       }
       ry += rowH * 0.5;

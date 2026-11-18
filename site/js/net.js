@@ -176,7 +176,7 @@ const Net = {
     if (this.role !== 'host') return;
     if (this.hostIn(pres)) { if (tries < 4) { this.host(onReady, tries + 1); return; } this.fail('Kein freier Raumcode gefunden.'); return; }
     const S = save.settings;
-    this.settings = { map: S.map, size: S.size, diff: S.diff, caps: S.caps, time: S.time, bots: S.bots !== false };
+    this.settings = { gameMode: S.gameMode || 'ctf', map: S.map, size: S.size, diff: S.diff, caps: S.caps, time: S.time, bots: S.bots !== false };
     this.players = [this.meInfo('host')];
     this.startHeartbeat();
     this.lobbyChanged();
@@ -276,7 +276,7 @@ const Net = {
   startMatch() {
     const S = this.settings;
     const humans = this.players.map(p => ({ key: p.pid, name: p.name, driver: p.driver, car: p.car, upgrades: p.upgrades, team: p.team, human: true }));
-    const opts = { mapId: S.map, teamSize: S.size, difficulty: S.diff, capLimit: S.caps, timeLimit: S.time, bots: S.bots !== false };
+    const opts = { gameMode: S.gameMode || 'ctf', mapId: S.map, teamSize: S.size, difficulty: S.diff, capLimit: S.caps, timeLimit: S.time, bots: S.bots !== false };
     opts.roster = Game.buildRoster(opts, humans);
     this.inGame = true; this.matchOpts = opts;
     this.roomSend({ t: 'start', opts });

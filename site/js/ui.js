@@ -11,7 +11,7 @@ const DEFAULT_SAVE = {
   up: {},
   car: 'flitzer',
   driver: 'marlon',
-  settings: { sound: true, autoAim: false, gfx3d: true, cam: 'chase', size: 4, diff: 1, caps: 3, time: 480, map: 'ravensburg', bots: true },
+  settings: { sound: true, autoAim: true, autoFire: false, gfx3d: true, cam: 'chase', gameMode: 'ctf', size: 4, diff: 1, caps: 3, time: 480, map: 'ravensburg', bots: true },
   stats: { games: 0, wins: 0, kills: 0, caps: 0 },
 };
 let save = loadSave();
@@ -77,7 +77,8 @@ function renderMenu() {
   nick.addEventListener('keydown', e => e.stopPropagation());
   nick.addEventListener('input', () => { save.name = cleanName(nick.value); writeSave(); });
   $('#opt-sound').checked = save.settings.sound;
-  $('#opt-aim').checked = save.settings.autoAim;
+  $('#opt-aim').checked = save.settings.autoAim !== false;
+  if ($('#opt-autofire')) $('#opt-autofire').checked = !!save.settings.autoFire;
   $('#opt-3d').checked = save.settings.gfx3d !== false;
 }
 
@@ -98,6 +99,7 @@ function mapPreview(m) {
   return miniCache[m.id];
 }
 function seg(el, items, val, onPick, disabled) {
+  if (!el) return;
   el.innerHTML = '';
   for (const [v, label] of items) {
     const b = document.createElement('button');
@@ -109,6 +111,7 @@ function seg(el, items, val, onPick, disabled) {
 }
 function renderSetup() {
   const S = save.settings;
+  if (!S.gameMode) S.gameMode = 'ctf';
   const wrap = $('#maps'); wrap.innerHTML = '';
   for (const m of MAPS) {
     const card = document.createElement('div');
@@ -121,9 +124,23 @@ function renderSetup() {
     card.onclick = () => { S.map = m.id; writeSave(); Sound.play('click'); renderSetup(); };
     wrap.appendChild(card);
   }
-  seg($('#seg-size'), [[2, '2v2'], [3, '3v3'], [4, '4v4'], [5, '5v5'], [6, '6v6']], S.size, v => S.size = v);
+  seg($('#seg-mode'), [['ctf', '🚩 CTF'], ['tdm', '⚔️ Team-DM'], ['gungame', '🔫 Gun Game']], S.gameMode, v => { S.gameMode = v; renderSetup(); });
+  const sizeLabels = S.gameMode === 'gungame'
+    ? [[2, '4 Solo'], [3, '6 Solo'], [4, '8 Solo'], [5, '10 Solo'], [6, '12 Solo']]
+    : [[2, '2v2'], [3, '3v3'], [4, '4v4'], [5, '5v5'], [6, '6v6']];
+  seg($('#seg-size'), sizeLabels, S.size, v => S.size = v);
   seg($('#seg-diff'), [[0, 'Leicht'], [1, 'Mittel'], [2, 'Schwer']], S.diff, v => S.diff = v);
-  seg($('#seg-caps'), [[3, '3'], [5, '5'], [7, '7']], S.caps, v => S.caps = v);
+  const lblCaps = $('#lbl-setup-caps');
+  if (S.gameMode === 'tdm') {
+    if (lblCaps) lblCaps.textContent = 'Kills zum Sieg';
+    seg($('#seg-caps'), [[3, '15 Kills'], [5, '25 Kills'], [7, '35 Kills']], S.caps, v => S.caps = v);
+  } else if (S.gameMode === 'gungame') {
+    if (lblCaps) lblCaps.textContent = 'Waffen-Stufen';
+    seg($('#seg-caps'), [[S.caps, GUNGAME_TIERS.length + ' Stufen (Solo)']], S.caps, () => {}, true);
+  } else {
+    if (lblCaps) lblCaps.textContent = 'Flaggen zum Sieg';
+    seg($('#seg-caps'), [[3, '3'], [5, '5'], [7, '7']], S.caps, v => S.caps = v);
+  }
   seg($('#seg-time'), [[300, '5 Min'], [480, '8 Min'], [720, '12 Min']], S.time, v => S.time = v);
   $('#setup-car').innerHTML = `${avatarHtml(save.driver, myName())}<div><b>${esc(myName())}</b><br>im ${esc((CARS.find(c => c.id === save.car) || CARS[0]).name)}</div>`;
   renderLoadout($('#loadout'), save.car, id => { save.car = id; writeSave(); Sound.play('click'); renderSetup(); });
@@ -160,9 +177,12 @@ function startMatch(opts) {
 function matchOpts() {
   const S = save.settings;
   return {
+    gameMode: S.gameMode || 'ctf',
     mapId: S.map, teamSize: S.size, difficulty: S.diff, capLimit: S.caps, timeLimit: S.time,
     three: save.settings.gfx3d !== false, camMode: save.settings.cam || 'chase',
-    car: save.car, driver: save.driver, name: myName(), upgrades: save.up[save.car] || {}, autoAim: S.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0),
+    car: save.car, driver: save.driver, name: myName(), upgrades: save.up[save.car] || {},
+    autoAim: S.autoAim !== false || ('ontouchstart' in window && navigator.maxTouchPoints > 0),
+    autoFire: !!S.autoFire,
   };
 }
 function endMatch(res) {
@@ -175,8 +195,18 @@ function endMatch(res) {
   const t = { win: '🏆 SIEG!', lose: '💀 NIEDERLAGE', draw: '🤝 UNENTSCHIEDEN' }[res];
   $('#end-title').textContent = t;
   $('#end-title').style.color = res === 'win' ? '#7dff8a' : res === 'lose' ? '#ff8c7f' : '#fff';
-  $('#end-score').innerHTML = `<span style="color:${TEAM[0].color}">${game.score[0]}</span> : <span style="color:${TEAM[1].color}">${game.score[1]}</span>`;
-  $('#end-stats').innerHTML = [['Abschüsse', p.kills], ['Tode', p.deaths], ['Punkte', p.caps], ['Rettungen', p.returns]].map(([k, v]) => `<div><b>${v}</b><span>${k}</span></div>`).join('');
+  if (game.gameMode === 'gungame') {
+    const top = [...game.cars].sort((a, b) => ((b.ggTier || 0) - (a.ggTier || 0)) || (b.kills - a.kills))[0] || p;
+    const tc = TEAM[top.team % TEAM.length].color;
+    $('#end-score').innerHTML = `<span style="color:${tc};font-size:.55em">🔫 ${esc(top.name)} (${top.kills} Kills · Stufe ${Math.min(GUNGAME_TIERS.length, (top.ggTier || 0) + 1)}/${GUNGAME_TIERS.length})</span>`;
+    $('#end-stats').innerHTML = [['Abschüsse', p.kills], ['Tode', p.deaths], ['Waffenstufe', `${Math.min(GUNGAME_TIERS.length, (p.ggTier || 0) + 1)}/${GUNGAME_TIERS.length}`], ['Waffe', WEAPONS[p.weaponId || p.def.weapon].name]].map(([k, v]) => `<div><b>${esc(v)}</b><span>${k}</span></div>`).join('');
+  } else if (game.gameMode === 'tdm') {
+    $('#end-score').innerHTML = `<span style="color:${TEAM[0].color}">${game.score[0]}</span> : <span style="color:${TEAM[1].color}">${game.score[1]}</span>`;
+    $('#end-stats').innerHTML = [['Abschüsse', p.kills], ['Tode', p.deaths], ['Team-Kills', game.score[p.team] || 0], ['Ziel', game.targetScore]].map(([k, v]) => `<div><b>${v}</b><span>${k}</span></div>`).join('');
+  } else {
+    $('#end-score').innerHTML = `<span style="color:${TEAM[0].color}">${game.score[0]}</span> : <span style="color:${TEAM[1].color}">${game.score[1]}</span>`;
+    $('#end-stats').innerHTML = [['Abschüsse', p.kills], ['Tode', p.deaths], ['Punkte', p.caps], ['Rettungen', p.returns]].map(([k, v]) => `<div><b>${v}</b><span>${k}</span></div>`).join('');
+  }
   $('#end-coins').textContent = `+${fmt(game.earned)} Kohle  (gesamt: ${fmt(save.coins)})`;
   const lb = $('#btn-end-lobby');
   if (game.isClient) { lb.disabled = true; lb.textContent = 'Warte auf den Host …'; }
@@ -305,6 +335,7 @@ $('#btn-end-garage').onclick = () => { if (game) { game.destroy(); game = null; 
 $('#btn-end-menu').onclick = () => quitToMenu();
 $('#opt-sound').onchange = e => { save.settings.sound = e.target.checked; Sound.setMuted(!e.target.checked); writeSave(); };
 $('#opt-aim').onchange = e => { save.settings.autoAim = e.target.checked; writeSave(); };
+if ($('#opt-autofire')) $('#opt-autofire').onchange = e => { save.settings.autoFire = e.target.checked; writeSave(); };
 $('#opt-3d').onchange = e => { save.settings.gfx3d = e.target.checked; writeSave(); stopDemo(); startDemo(); };
 
 function togglePause(v) {
@@ -327,6 +358,14 @@ Input.init(canvas);
 Input.onKey = code => {
   if (code === 'Escape' || code === 'KeyP') togglePause();
   if (code === 'KeyC' && game && game.r3d && !game.demo) { save.settings.cam = game.toggleCam(); writeSave(); }
+  if (code === 'KeyV' && game && !game.demo) {
+    game.opts.autoFire = !game.opts.autoFire;
+    save.settings.autoFire = game.opts.autoFire;
+    if ($('#opt-autofire')) $('#opt-autofire').checked = game.opts.autoFire;
+    writeSave();
+    Sound.play('click');
+    game.say(game.opts.autoFire ? '🔥 Auto-Feuer: AN [V]' : 'Auto-Feuer: AUS [V]', game.opts.autoFire ? '#ffe66d' : '#ccc', 1.3, false);
+  }
   if (game && !game.demo && /^Digit[123]$/.test(code)) game.requestUp(MATCH_UPS[+code.slice(5) - 1].k);
   if (code === 'KeyM') { save.settings.sound = !save.settings.sound; Sound.setMuted(!save.settings.sound); writeSave(); toast(save.settings.sound ? 'Sound an' : 'Sound aus'); }
 };
@@ -341,10 +380,17 @@ function renderOnline() {
 }
 function roomLink() { return location.origin + location.pathname + '?raum=' + Net.code; }
 const SEGS = {
+  gameMode: () => [['ctf', '🚩 CTF'], ['tdm', '⚔️ Team-DM'], ['gungame', '🔫 Gun Game']],
   map: () => MAPS.map(m => [m.id, m.name]),
-  size: () => [[2, '2v2'], [3, '3v3'], [4, '4v4'], [5, '5v5'], [6, '6v6']],
+  size: () => (Net.settings && Net.settings.gameMode === 'gungame')
+    ? [[2, '4 Solo'], [3, '6 Solo'], [4, '8 Solo'], [5, '10 Solo'], [6, '12 Solo']]
+    : [[2, '2v2'], [3, '3v3'], [4, '4v4'], [5, '5v5'], [6, '6v6']],
   diff: () => [[0, 'Leicht'], [1, 'Mittel'], [2, 'Schwer']],
-  caps: () => [[3, '3'], [5, '5'], [7, '7']],
+  caps: () => (Net.settings && Net.settings.gameMode === 'tdm')
+    ? [[3, '15 Kills'], [5, '25 Kills'], [7, '35 Kills']]
+    : (Net.settings && Net.settings.gameMode === 'gungame')
+      ? [[3, GUNGAME_TIERS.length + ' Stufen'], [5, GUNGAME_TIERS.length + ' Stufen'], [7, GUNGAME_TIERS.length + ' Stufen']]
+      : [[3, '3'], [5, '5'], [7, '7']],
   time: () => [[300, '5 Min'], [480, '8 Min'], [720, '12 Min']],
   bots: () => [[true, 'Bots an'], [false, 'Bots aus']],
 };
@@ -354,8 +400,11 @@ function renderLobby() {
   const isHost = Net.role === 'host';
   $('#lobby-code').textContent = Net.code || '…';
   const S = Net.settings || {};
+  if (!S.gameMode) S.gameMode = 'ctf';
+  const lblCaps = $('#lbl-lobby-caps');
+  if (lblCaps) lblCaps.textContent = S.gameMode === 'tdm' ? 'Kills zum Sieg' : S.gameMode === 'gungame' ? 'Waffen-Stufen' : 'Flaggen zum Sieg';
   for (const k of Object.keys(SEGS)) {
-    seg($('#lseg-' + k), SEGS[k](), S[k], v => { save.settings[k] = v; Net.setSetting(k, v); }, !isHost);
+    seg($('#lseg-' + k), SEGS[k](), S[k], v => { save.settings[k] = v; Net.setSetting(k, v); }, !isHost || (k === 'caps' && S.gameMode === 'gungame'));
   }
   $('#lobby-hostnote').textContent = isHost ? '' : '(legt der Host fest)';
   $('#btn-lobby-start').classList.toggle('hidden', !isHost);
@@ -400,7 +449,8 @@ Net.onError = msg => {
 };
 Net.onStart = opts => {
   opts.three = save.settings.gfx3d !== false; opts.camMode = save.settings.cam || 'chase';
-  opts.autoAim = save.settings.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+  opts.autoAim = save.settings.autoAim !== false || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+  opts.autoFire = !!save.settings.autoFire;
   startMatch(opts);
 };
 Net.onSnapshot = snap => { if (game && game.isClient) game.applySnapshot(snap); };
@@ -444,7 +494,8 @@ $('#btn-lobby-start').onclick = () => {
   if (Net.role !== 'host') return;
   const opts = Net.startMatch();
   opts.three = save.settings.gfx3d !== false; opts.camMode = save.settings.cam || 'chase';
-  opts.autoAim = save.settings.autoAim || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+  opts.autoAim = save.settings.autoAim !== false || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+  opts.autoFire = !!save.settings.autoFire;
   startMatch(opts);
 };
 $('#btn-copy').onclick = async () => {

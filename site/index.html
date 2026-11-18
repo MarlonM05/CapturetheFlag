@@ -32,7 +32,8 @@
       </div>
       <div class="menu-foot">
         <label class="chk"><input type="checkbox" id="opt-sound" checked> Sound</label>
-        <label class="chk"><input type="checkbox" id="opt-aim"> Zielhilfe</label>
+        <label class="chk"><input type="checkbox" id="opt-aim" checked> Zielhilfe</label>
+        <label class="chk"><input type="checkbox" id="opt-autofire"> Auto-Feuer</label>
         <label class="chk"><input type="checkbox" id="opt-3d" checked> 3D-Grafik</label>
         <span class="credits">Karten: © OpenStreetMap-Mitwirkende (ODbL) · <a href="admin.html" style="color:inherit">Admin</a></span>
       </div>
@@ -48,9 +49,10 @@
       <h3>Karte</h3>
       <div class="maps" id="maps"></div>
       <div class="opts">
+        <div class="opt"><span>Spielmodus</span><div class="seg" id="seg-mode"></div></div>
         <div class="opt"><span>Teamgröße</span><div class="seg" id="seg-size"></div></div>
         <div class="opt"><span>Gegner</span><div class="seg" id="seg-diff"></div></div>
-        <div class="opt"><span>Punkte zum Sieg</span><div class="seg" id="seg-caps"></div></div>
+        <div class="opt"><span id="lbl-setup-caps">Punkte zum Sieg</span><div class="seg" id="seg-caps"></div></div>
         <div class="opt"><span>Zeitlimit</span><div class="seg" id="seg-time"></div></div>
       </div>
       <div class="setup-foot">
@@ -98,11 +100,12 @@
         </div>
         <div class="lobby-side">
           <h3>Einstellungen <span id="lobby-hostnote" class="hint"></span></h3>
+          <div class="opt"><span>Spielmodus</span><div class="seg" id="lseg-gameMode"></div></div>
           <div class="opt"><span>Karte</span><div class="seg" id="lseg-map"></div></div>
           <div class="opt"><span>Teamgröße (Rest = Bots)</span><div class="seg" id="lseg-size"></div></div>
           <div class="opt"><span>KI-Bots</span><div class="seg" id="lseg-bots"></div></div>
           <div class="opt"><span>Bot-Stärke</span><div class="seg" id="lseg-diff"></div></div>
-          <div class="opt"><span>Punkte zum Sieg</span><div class="seg" id="lseg-caps"></div></div>
+          <div class="opt"><span id="lbl-lobby-caps">Punkte zum Sieg</span><div class="seg" id="lseg-caps"></div></div>
           <div class="opt"><span>Zeitlimit</span><div class="seg" id="lseg-time"></div></div>
           <h3>Dein Fahrzeug</h3>
           <div class="loadout small" id="lobby-loadout"></div>
@@ -152,24 +155,25 @@
       <header><button class="btn back" data-go="menu">←</button><h2>So wird gespielt</h2></header>
       <div class="help">
         <div class="help-box">
-          <h3>🚩 Ziel</h3>
-          <p>Klau die gegnerische Flagge aus deren Basis und bring sie zu deiner eigenen Basis – aber nur, wenn deine eigene Flagge noch dort ist! Wird ein Flaggenträger abgeschossen, fällt die Flagge auf den Boden. Fahr über deine eigene Flagge, um sie zurückzuholen.</p>
+          <h3>🚩 Spielmodi</h3>
+          <p><b>Capture the Flag:</b> Klau die gegnerische Flagge und bring sie zu deiner Basis!<br><b>Team-Deathmatch:</b> Rot gegen Blau – das erste Team mit der Ziel-Killzahl gewinnt.<br><b>Gun Game (Solo):</b> Jeder gegen jeden! Jeder Kill rüstet deine Dachwaffe durch 6 Stufen hoch bis zur Goldenen Railgun.</p>
         </div>
         <div class="help-box">
-          <h3>⌨️ Tastatur & Maus</h3>
+          <h3>⌨️ Tastatur, Trackpad & Maus</h3>
           <table>
-            <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / Pfeile</td><td>Fahren & Lenken</td></tr>
-            <tr><td>Maus</td><td>Fadenkreuz in der Bildmitte – Klick fängt die Maus ein: Maus-Blick 360° rundum, auch hoch/runter, Esc gibt sie frei.</td></tr>
-            <tr><td>Linke Maustaste / <kbd>F</kbd></td><td>Schießen</td></tr>
-            <tr><td><kbd>Leertaste</kbd></td><td>Springen – in der Luft nochmal: Doppelsprung, mit <kbd>W</kbd>/<kbd>A</kbd>/<kbd>S</kbd>/<kbd>D</kbd>: Ausweichsprung in die Richtung</td></tr>
-            <tr><td><kbd>Shift</kbd></td><td>Nitro – in der Luft: kräftiger Auftrieb (Sprung + Nitro = über Dächer hüpfen)</td></tr>
+            <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / Pfeile</td><td>Fahren, Lenken & Luftkontrolle (Neigen/Rollen)</td></tr>
+            <tr><td>Maus / Trackpad</td><td>360°-Rundumblick & Zielen mit sanfter magnetischer Zielhilfe in Gegnernähe (Esc gibt Zeiger frei).</td></tr>
+            <tr><td>Klick / <kbd>F</kbd> / <kbd>Enter</kbd> / <kbd>Strg</kbd></td><td>Schießen (bequem per Taste ohne Trackpad-Klick)</td></tr>
+            <tr><td><kbd>V</kbd></td><td>Auto-Feuer (Dauerfeuer) an/aus umschalten – ideal fürs Trackpad</td></tr>
+            <tr><td><kbd>Leertaste</kbd></td><td>Springen – in der Luft nochmal: Doppelsprung, mit <kbd>W</kbd>/<kbd>A</kbd>/<kbd>S</kbd>/<kbd>D</kbd>: Ausweichsprung & Rolle</td></tr>
+            <tr><td><kbd>Shift</kbd></td><td>Nitro – in der Luft: gleichmäßiger Schub & Auftrieb zum Gleiten/Fliegen</td></tr>
             <tr><td>Nitro laden</td><td>lädt von selbst, schneller beim Driften, in der Luft und nach Saltos</td></tr>
             <tr><td><kbd>Q</kbd> + Lenken</td><td>Driften (Handbremse)</td></tr>
-            <tr><td>In der Luft: <kbd>W</kbd>/<kbd>S</kbd> + <kbd>Shift</kbd></td><td>Salto vorwärts / rückwärts – gerade landen bringt XP, schiefe Landung bremst</td></tr>
+            <tr><td>In der Luft: <kbd>W</kbd>/<kbd>S</kbd> + <kbd>Shift</kbd></td><td>Salto vorwärts / rückwärts – Auto richtet sich vor der Landung sanft auf</td></tr>
             <tr><td><kbd>E</kbd> / Rechtsklick</td><td>Mine legen</td></tr>
             <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>Upgrade im Match: Tempo / Panzerung / Waffe</td></tr>
             <tr><td><kbd>Tab</kbd></td><td>Punktetafel</td></tr>
-            <tr><td>Mausrad</td><td>Zoom</td></tr>
+            <tr><td>Mausrad / Geste</td><td>Zoom</td></tr>
             <tr><td><kbd>C</kbd></td><td>Kamera: Drohne / von oben</td></tr>
             <tr><td><kbd>Esc</kbd> / <kbd>P</kbd></td><td>Pause</td></tr>
           </table>

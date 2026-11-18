@@ -6,7 +6,25 @@
 const TEAM = [
   { name: 'Team Rot', short: 'ROT', color: '#e8423a', dark: '#8f1f19', light: '#ff8c7f' },
   { name: 'Team Blau', short: 'BLAU', color: '#3a7be8', dark: '#173f8a', light: '#8fb8ff' },
+  { name: 'Gold', short: 'GOLD', color: '#f5b82e', dark: '#8a610c', light: '#ffe082' },
+  { name: 'Smaragd', short: 'GRÜN', color: '#2ecc71', dark: '#146b3a', light: '#82f0b1' },
+  { name: 'Violett', short: 'LILA', color: '#a55eea', dark: '#542387', light: '#d2a8ff' },
+  { name: 'Cyan', short: 'CYAN', color: '#2bcbba', dark: '#11695f', light: '#8bf5ea' },
+  { name: 'Orange', short: 'ORNG', color: '#fa8231', dark: '#8c3f0b', light: '#ffbe8f' },
+  { name: 'Pink', short: 'PINK', color: '#eb3b5a', dark: '#801428', light: '#ff94a7' },
+  { name: 'Limette', short: 'LIME', color: '#88d428', dark: '#46730c', light: '#c7f58c' },
+  { name: 'Kobalt', short: 'KBLT', color: '#4b7bec', dark: '#1e3c85', light: '#9cb8ff' },
+  { name: 'Koralle', short: 'KORL', color: '#ff6b6b', dark: '#8c2b2b', light: '#ffb8b8' },
+  { name: 'Türkis', short: 'TÜRK', color: '#0fb9b1', dark: '#06615c', light: '#7cebe5' },
 ];
+
+const GAME_MODES = {
+  ctf: { id: 'ctf', name: 'Capture the Flag', short: 'CTF', icon: '🚩', desc: 'Klau die gegnerische Flagge und bring sie zur eigenen Basis.' },
+  tdm: { id: 'tdm', name: 'Team-Deathmatch', short: 'TDM', icon: '⚔️', desc: 'Rot gegen Blau: Das erste Team, das das Kill-Ziel erreicht, gewinnt!' },
+  gungame: { id: 'gungame', name: 'Gun Game (Solo)', short: 'GUN GAME', icon: '🔫', desc: 'Jeder gegen jeden! Jeder Kill rüstet deine Waffe hoch – wer mit der Goldenen Railgun trifft, gewinnt!' },
+};
+
+const GUNGAME_TIERS = ['mg', 'burst', 'shotgun', 'plasma', 'rocket', 'railgun'];
 
 // Upgrade-Kategorien (je 5 Stufen)
 const UPGRADES = [
@@ -22,11 +40,14 @@ function upgradeCost(lvl) { return Math.round(150 * Math.pow(lvl + 1, 1.6) / 10)
 
 // Waffen
 const WEAPONS = {
-  mg: { name: 'Doppel-MG', speed: 125, life: 0.5, spread: 0.035, count: 1, splash: 0, size: 0.35, color: '#ffe27a', sound: 'mg' },
-  minigun: { name: 'Minigun', speed: 120, life: 0.48, spread: 0.085, count: 1, splash: 0, size: 0.3, color: '#ffd04d', sound: 'mini' },
-  cannon: { name: 'Kanone', speed: 72, life: 1.1, spread: 0.01, count: 1, splash: 4.5, size: 0.7, color: '#ffb347', sound: 'cannon' },
-  rocket: { name: 'Raketen', speed: 42, life: 1.9, spread: 0.02, count: 1, splash: 5, size: 0.55, color: '#ff7b39', homing: 0.32, accel: 22, maxSpeed: 68, sound: 'rocket' },
-  shotgun: { name: 'Schrotflinte', speed: 95, life: 0.3, spread: 0.24, count: 7, splash: 0, size: 0.3, color: '#fff1b0', sound: 'shotgun' },
+  mg: { name: 'Doppel-MG', speed: 125, life: 0.5, spread: 0.035, count: 1, splash: 0, size: 0.35, color: '#ffe27a', sound: 'mg', baseDmg: 8.5, baseRate: 7.0 },
+  minigun: { name: 'Minigun', speed: 120, life: 0.48, spread: 0.085, count: 1, splash: 0, size: 0.3, color: '#ffd04d', sound: 'mini', baseDmg: 3.5, baseRate: 16.0 },
+  burst: { name: 'Salven-Kanone', speed: 112, life: 0.58, spread: 0.024, count: 2, splash: 0, size: 0.38, color: '#6ee7ff', sound: 'mg', baseDmg: 11.5, baseRate: 4.5 },
+  cannon: { name: 'Kanone', speed: 72, life: 1.1, spread: 0.01, count: 1, splash: 4.5, size: 0.7, color: '#ffb347', sound: 'cannon', baseDmg: 42, baseRate: 0.9 },
+  plasma: { name: 'Plasma-Blaster', speed: 84, life: 0.85, spread: 0.015, count: 1, splash: 3.2, size: 0.56, color: '#d580ff', sound: 'cannon', baseDmg: 32, baseRate: 2.5 },
+  rocket: { name: 'Raketen', speed: 42, life: 1.9, spread: 0.02, count: 1, splash: 5, size: 0.55, color: '#ff7b39', homing: 0.32, accel: 22, maxSpeed: 68, sound: 'rocket', baseDmg: 36, baseRate: 1.45 },
+  shotgun: { name: 'Schrotflinte', speed: 95, life: 0.3, spread: 0.24, count: 7, splash: 0, size: 0.3, color: '#fff1b0', sound: 'shotgun', baseDmg: 6.2, baseRate: 1.75 },
+  railgun: { name: 'Goldene Railgun', speed: 165, life: 0.75, spread: 0.003, count: 1, splash: 4.0, size: 0.65, color: '#ffd700', sound: 'cannon', baseDmg: 85, baseRate: 1.25 },
 };
 
 // Fahrzeugklassen (alle frei wählbar). base = Stufe 0, per = Zuwachs pro Garagen-Upgrade

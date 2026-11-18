@@ -67,7 +67,17 @@ class World {
       const [ax, ay, az, bx, by, bz] = d.p, L = Math.hypot(bx - ax, by - ay) || 1;
       return { ax, ay, az, bx, by, bz, w: d.w, L, ux: (bx - ax) / L, uy: (by - ay) / L, bb: [Math.min(ax, bx) - d.w, Math.min(ay, by) - d.w, Math.max(ax, bx) + d.w, Math.max(ay, by) + d.w] };
     });
-    this.tunnels = (map.tunnels || []).map(t => {
+    // Zusätzliche befahrbare Tunnel unter den Hügeln (Martinsberg, Kirchberg, Veitsburg)
+    const isRW = map.id === 'schussental' || map.id === 'ravensburg' || !map.id;
+    const extraTunnels = [
+      { name: 'Martinsberg-Tunnel', w: 13, hgt: 6.8, p: [135, 110, 14.5, 135, 500, 12.3] },
+      { name: 'Kirchberg-Tunnel', w: 13, hgt: 6.8, p: [675, 230, 18.7, 1035, 230, 31.9] },
+      { name: 'Veitsburg-Tunnel', w: 13, hgt: 7.0, p: [740, 1795, 19.0, 1040, 1795, 40.9] },
+    ];
+    const allTunnels = (map.tunnels || []).concat(
+      isRW ? extraTunnels.filter(et => !(map.tunnels || []).some(t => t.name === et.name)) : []
+    );
+    this.tunnels = allTunnels.map(t => {
       const segs = [];
       for (let i = 0; i + 5 < t.p.length; i += 3) {
         const [ax, ay, az, bx, by, bz] = t.p.slice(i, i + 6), L = Math.hypot(bx - ax, by - ay) || 1;
@@ -78,8 +88,16 @@ class World {
     });
     this.landmarks = map.landmarks || [];
     this.rails = (map.rails || []).map(r => ({ ax: r.p[0], ay: r.p[1], az: r.p[2], bx: r.p[3], by: r.p[4], bz: r.p[5], w: !!r.w }));
-    // Gebäude
-    this.buildings = map.buildings.map((b, i) => {
+    // Gebäude (an neuen Tunnelportalen Zufahrt freihalten)
+    const portalClear = [];
+    for (const tn of this.tunnels) {
+      const s0 = tn.segs[0], s1 = tn.segs[tn.segs.length - 1];
+      portalClear.push([s0.ax, s0.ay], [s1.bx, s1.by]);
+    }
+    this.buildings = map.buildings.filter(b => {
+      const bb = polyBBox(b.p);
+      return !portalClear.some(([px, py]) => px >= bb[0] - 8 && px <= bb[2] + 8 && py >= bb[1] - 8 && py <= bb[3] + 8);
+    }).map((b, i) => {
       const bb = polyBBox(b.p);
       let cx = 0, cy = 0; const n = b.p.length / 2;
       for (let k = 0; k < b.p.length; k += 2) { cx += b.p[k]; cy += b.p[k + 1]; }
@@ -113,7 +131,15 @@ class World {
       };
     });
     for (const b of this.buildings) b.rf = b.lm || b.flat ? null : roofShape(b);
-    this.roads = map.roads.map(r => ({ ...r, bb: polyBBox(r.p) }));
+    const extraRoads = isRW ? [
+      { k: 1, w: 10, p: [135, 78, 135, 114] },
+      { k: 1, w: 10, p: [135, 496, 135, 540] },
+      { k: 1, w: 10, p: [640, 230, 680, 230] },
+      { k: 1, w: 10, p: [1030, 230, 1070, 230] },
+      { k: 1, w: 10, p: [705, 1795, 745, 1795] },
+      { k: 1, w: 10, p: [1035, 1795, 1075, 1795] },
+    ] : [];
+    this.roads = map.roads.concat(extraRoads).map(r => ({ ...r, bb: polyBBox(r.p) }));
     this.areas = map.areas.map(a => ({ ...a, bb: polyBBox(a.p) }));
     this.water = map.water.map(w => Array.isArray(w) ? { p: w, z: -0.3, bb: polyBBox(w) } : { p: w.p, z: w.z, bb: polyBBox(w.p) });
     this.trees = [];
@@ -121,10 +147,59 @@ class World {
       const h = hash32(i);
       this.trees.push({ x: map.trees[i], y: map.trees[i + 1], r: 2.2 + (h % 100) / 60, h: 7 + (h % 5), hue: h % 3 });
     }
-    this.labels = map.labels;
+    const extraLabels = isRW ? [
+      { x: 135, y: 305, t: 'Martinsberg-Tunnel', k: 1, a: -Math.PI / 2 },
+      { x: 855, y: 230, t: 'Kirchberg-Tunnel', k: 1, a: 0 },
+      { x: 890, y: 1795, t: 'Veitsburg-Tunnel', k: 1, a: 0 },
+    ] : [];
+    this.labels = (map.labels || []).concat(extraLabels);
     this.bases = map.bases;
-    this.ramps = map.ramps.map(r => ({ ...r, len: r.l || 7, wid: r.w || 5, big: !!r.b }));
+    // Zusätzliche Sprungschanzen an Flussufern, Hauptachsen, Plätzen und Dächern
+    const extraRamps = isRW ? [
+      // Neue Fluss-Sprungschanzen über die Schussen (Nord- und Südufer)
+      { x: 365, y: 851, a: Math.PI / 2, l: 9, w: 10, b: 1 },
+      { x: 365, y: 884, a: -Math.PI / 2, l: 9, w: 10, b: 1 },
+      { x: 485, y: 850, a: Math.PI / 2, l: 9, w: 10, b: 1 },
+      { x: 485, y: 883, a: -Math.PI / 2, l: 9, w: 10, b: 1 },
+      { x: 915, y: 855, a: Math.PI / 2, l: 9, w: 10, b: 1 },
+      { x: 915, y: 889, a: -Math.PI / 2, l: 9, w: 10, b: 1 },
+      { x: 1035, y: 854, a: Math.PI / 2, l: 9, w: 10, b: 1 },
+      { x: 1035, y: 887, a: -Math.PI / 2, l: 9, w: 10, b: 1 },
+      // Weingarten: Hauptachsen, Tunnelzufahrten & Dach-Sprünge
+      { x: 545, y: 245, a: 0, l: 8, w: 6, b: 1 },
+      { x: 430, y: 230, a: Math.PI / 2, l: 8, w: 6, b: 0 },
+      { x: 430, y: 490, a: -Math.PI / 2, l: 8, w: 6, b: 0 },
+      { x: 265, y: 310, a: 0, l: 8, w: 6, b: 1 },
+      { x: 645, y: 470, a: -Math.PI / 4, l: 8, w: 6, b: 1 },
+      { x: 135, y: 555, a: -Math.PI / 2, l: 8, w: 6, b: 0 },
+      // Schussental & Brücken-Sprungschanzen
+      { x: 295, y: 785, a: Math.PI / 2, l: 8, w: 6, b: 1 },
+      { x: 295, y: 950, a: -Math.PI / 2, l: 8, w: 6, b: 1 },
+      { x: 590, y: 960, a: Math.PI / 2, l: 8, w: 6, b: 0 },
+      { x: 590, y: 1120, a: -Math.PI / 2, l: 8, w: 6, b: 0 },
+      { x: 845, y: 780, a: Math.PI / 2, l: 8, w: 6, b: 1 },
+      // Ravensburg: Marienplatz, Altstadt & Veitsburg-Zufahrt
+      { x: 560, y: 1480, a: Math.PI / 2, l: 8, w: 6, b: 1 },
+      { x: 560, y: 1740, a: -Math.PI / 2, l: 8, w: 6, b: 1 },
+      { x: 410, y: 1610, a: 0, l: 8, w: 6, b: 1 },
+      { x: 705, y: 1630, a: 0, l: 8, w: 6, b: 1 },
+      { x: 700, y: 1795, a: 0, l: 8, w: 6, b: 0 },
+    ] : [];
+    this.ramps = map.ramps.concat(extraRamps).map(r => ({ ...r, len: r.l || 7, wid: r.w || 5, big: !!r.b }));
     this.buildHash();
+    // Sicherstellen, dass keine zusätzliche Rampe in einem Gebäude liegt
+    for (const r of this.ramps) {
+      if (this.buildingAt(r.x, r.y)) {
+        for (let d = 3; d <= 18; d += 3) {
+          let found = false;
+          for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+            const nx = r.x + Math.cos(a) * d, ny = r.y + Math.sin(a) * d;
+            if (!this.buildingAt(nx, ny) && !this.inWater(nx, ny)) { r.x = nx; r.y = ny; found = true; break; }
+          }
+          if (found) break;
+        }
+      }
+    }
     this.buildNav();
     this.tiles = new Map();
     this.tileZ = 0;
@@ -169,7 +244,19 @@ class World {
         add(this.hEdges, [Math.min(e.ax, e.bx), Math.min(e.ay, e.by), Math.max(e.ax, e.bx), Math.max(e.ay, e.by)], e);
       }
     });
-    this.tunnels.forEach(t => add(this.hTun, t.bb, t));
+    this.tunnels.forEach(t => {
+      add(this.hTun, t.bb, t);
+      // Seitenwände im Inneren des Tunnels für sauberes Entlanggleiten
+      for (const sg of t.segs) {
+        const ux = (sg.bx - sg.ax) / sg.L, uy = (sg.by - sg.ay) / sg.L;
+        const px = -uy * (t.w / 2), py = ux * (t.w / 2);
+        const wallB = { top: Math.max(sg.az, sg.bz) + t.hgt, base: Math.min(sg.az, sg.bz) - 1.0, p: null };
+        for (const s of [1, -1]) {
+          const e = { ax: sg.ax + px * s, ay: sg.ay + py * s, bx: sg.bx + px * s, by: sg.by + py * s, b: wallB, isTunnelWall: true };
+          add(this.hEdges, [Math.min(e.ax, e.bx), Math.min(e.ay, e.by), Math.max(e.ax, e.bx), Math.max(e.ay, e.by)], e);
+        }
+      }
+    });
     this.trees.forEach(t => add(this.hTrees, [t.x, t.y, t.x, t.y], t, 1));
   }
   cell(x, y) {
@@ -227,21 +314,47 @@ class World {
         const px = sg.ax + dx * t, py = sg.ay + dy * t;
         if ((x - px) ** 2 + (y - py) ** 2 > (tn.w / 2) ** 2) continue;
         const floor = sg.az + (sg.bz - sg.az) * t;
-        return { floor, ceil: floor + tn.hgt, tn };
+        const s = (sg.bz - sg.az) / sg.L;
+        return { floor, ceil: floor + tn.hgt, tn, sx: (dx / sg.L) * s, sy: (dy / sg.L) * s };
       }
     }
     return null;
   }
-  // Fahrbare Oberfläche unter einem Objekt in Höhe z (Gelände, Tunnelboden, Brücke, Dach)
-  groundAt(x, y, z) {
+  // Rampenhöhe und -steigung an (x, y), falls innerhalb einer Schanze (mit sanftem Einlauf)
+  rampAt(x, y) {
+    for (const r of this.ramps) {
+      const dx = x - r.x, dy = y - r.y, L = r.len, Wd = r.wid;
+      if (dx * dx + dy * dy > (L * L + Wd * Wd) * 0.35 + 4) continue;
+      const ca = Math.cos(r.a), sa = Math.sin(r.a);
+      const u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
+      if (u < -L / 2 - 0.8 || u > L / 2 + 0.35 || Math.abs(v) > Wd / 2 + 0.25) continue;
+      const tRaw = clampW((u + L / 2) / L, 0, 1);
+      // Sanfter Einlauf an der Unterkante (kein Hängenbleiben an der Rampe)
+      const t = tRaw < 0.22 ? (tRaw * tRaw) / 0.22 * 0.8 + tRaw * 0.2 : tRaw;
+      const dtdU = (tRaw < 0.22 ? (2 * tRaw / 0.22 * 0.8 + 0.2) : 1) / L;
+      const H = r.big ? 2.2 : 1.5;
+      const baseZ = this.terrain(r.x + (u - L / 2 * 0.15) * ca, r.y + (u - L / 2 * 0.15) * sa);
+      return { z: baseZ + H * t, sx: ca * H * dtdU, sy: sa * H * dtdU, r, t: tRaw, alongX: ca, alongY: sa };
+    }
+    return null;
+  }
+  // Fahrbare Oberfläche unter einem Objekt in Höhe z (Gelände, Tunnelboden, Brücke, Schanze, Dach)
+  // prevZ verhindert Durchfallen durch Böden/Dächer bei hoher Fallgeschwindigkeit
+  groundAt(x, y, z, prevZ) {
+    const zTop = prevZ !== undefined && prevZ > z ? prevZ : z;
     const tn = this.tunnelAt(x, y);
     let g, kind = 'terrain';
-    if (tn && z < tn.ceil - 0.5) { g = tn.floor; kind = 'tunnel'; }
+    if (tn && zTop < tn.ceil - 0.45) { g = tn.floor; kind = 'tunnel'; }
     else g = this.terrain(x, y);
+    const rp = kind === 'terrain' ? this.rampAt(x, y) : null;
+    if (rp && rp.z <= zTop + STEP + 0.65 && rp.z > g) { g = rp.z; kind = 'ramp'; }
     const ds = this.decksAt(x, y, this._dk || (this._dk = []));
-    for (const dz of ds) if (dz <= z + STEP + 0.3 && dz > g) { g = dz; kind = 'deck'; }
+    for (const dz of ds) if (dz <= zTop + STEP + 0.45 && dz > g) { g = dz; kind = 'deck'; }
     const b = this.buildingAt(x, y);
-    if (b && b.top <= z + 0.6 && b.top > g) { g = b.rf ? roofZ(b, x, y) : b.top; kind = 'roof'; }
+    if (b && b.top > g) {
+      const rz = b.rf ? roofZ(b, x, y) : b.top;
+      if (b.top <= zTop + 1.05 || rz <= zTop + 0.95) { g = rz; kind = 'roof'; }
+    }
     this.groundKind = kind;
     return g;
   }
@@ -264,21 +377,66 @@ class World {
     for (const dz of ds) { const bot = dz - DECK_T; if (bot > z + 0.3 && (best === null || bot < best)) best = bot; }
     return best;
   }
-  // Steigung (dz/dx, dz/dy) der Oberfläche
+  // Steigung (dz/dx, dz/dy) der Oberfläche ohne Kanten-Artefakte an Brücken/Dächern
   slopeAt(x, y, z) {
-    const e = 1.0;
-    return [(this.groundAt(x + e, y, z) - this.groundAt(x - e, y, z)) / (2 * e), (this.groundAt(x, y + e, z) - this.groundAt(x, y - e, z)) / (2 * e)];
+    const savedKind = this.groundKind;
+    if (savedKind === 'tunnel') {
+      const tn = this.tunnelAt(x, y);
+      if (tn) { this.groundKind = savedKind; return [tn.sx || 0, tn.sy || 0]; }
+    }
+    const rp = this.rampAt(x, y);
+    if (rp && Math.abs(z - rp.z) < 1.2) { this.groundKind = savedKind; return [rp.sx, rp.sy]; }
+    if (savedKind === 'deck') {
+      const c = this.cell(x, y);
+      if (c >= 0) for (const d of this.hDeck[c]) {
+        const rx = x - d.ax, ry = y - d.ay, t = rx * d.ux + ry * d.uy;
+        if (t >= 0 && t <= d.L && Math.abs(-rx * d.uy + ry * d.ux) <= d.w / 2) {
+          const s = (d.bz - d.az) / d.L;
+          this.groundKind = savedKind;
+          return [d.ux * s, d.uy * s];
+        }
+      }
+    }
+    if (savedKind === 'roof') {
+      const b = this.buildingAt(x, y);
+      if (!b || !b.rf) { this.groundKind = savedKind; return [0, 0]; }
+      const e = 0.45;
+      const zc = roofZ(b, x, y);
+      const zx1 = pointInPoly(b.p, x + e, y) ? roofZ(b, x + e, y) : zc;
+      const zx0 = pointInPoly(b.p, x - e, y) ? roofZ(b, x - e, y) : zc;
+      const zy1 = pointInPoly(b.p, x, y + e) ? roofZ(b, x, y + e) : zc;
+      const zy0 = pointInPoly(b.p, x, y - e) ? roofZ(b, x, y - e) : zc;
+      this.groundKind = savedKind;
+      return [clampW((zx1 - zx0) / (2 * e), -0.65, 0.65), clampW((zy1 - zy0) / (2 * e), -0.65, 0.65)];
+    }
+    const e = 0.9;
+    const sx = clampW((this.terrain(x + e, y) - this.terrain(x - e, y)) / (2 * e), -0.75, 0.75);
+    const sy = clampW((this.terrain(x, y + e) - this.terrain(x, y - e)) / (2 * e), -0.75, 0.75);
+    this.groundKind = savedKind;
+    return [sx, sy];
+  }
+  // Oberflächennormale (nx, ny, nz) am Bodenpunkt
+  normalAt(x, y, z) {
+    const [sx, sy] = this.slopeAt(x, y, z);
+    const il = 1 / Math.hypot(sx, sy, 1);
+    return [-sx * il, -sy * il, il];
   }
   // Kreis gegen statische Geometrie auflösen. Rückgabe: stärkste Normale oder null
-  collideCircle(o, r, z) {
+  collideCircle(o, r, z, vz) {
     let hit = null;
+    const tn = this.tunnelAt(o.x, o.y);
+    const inTun = !!(tn && z < tn.ceil - 0.5);
     const x0 = Math.max(0, Math.floor((o.x - r) / HASH)), x1 = Math.min(this.hw - 1, Math.floor((o.x + r) / HASH));
     const y0 = Math.max(0, Math.floor((o.y - r) / HASH)), y1 = Math.min(this.hh - 1, Math.floor((o.y + r) / HASH));
     const seen = this._seen || (this._seen = new Set()); seen.clear();
     for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) {
       const ci = cy * this.hw + cx;
       for (const e of this.hEdges[ci]) {
-        if (e.b.top <= z + 0.25 || e.b.base - 1 > z + 1.6 || seen.has(e)) continue;
+        if (e.isTunnelWall) { if (!inTun) continue; }
+        else if (inTun && e.b.p) continue;
+        // Sanfter Übergang auf Dachkanten: wer knapp unterhalb der Traufe fliegt, gleitet aufs Dach statt an einer unsichtbaren Kante abzuprallen
+        const roofGrace = e.b.p && (vz === undefined || vz >= -5.5) ? 0.85 : 0.32;
+        if (e.b.top <= z + roofGrace || e.b.base - 1 > z + 1.6 || seen.has(e)) continue;
         seen.add(e);
         const dx = e.bx - e.ax, dy = e.by - e.ay;
         const l2 = dx * dx + dy * dy || 1;
@@ -293,7 +451,7 @@ class World {
           // falls Mittelpunkt im Gebäude: Normale umdrehen
           if (e.b.p && pointInPoly(e.b.p, o.x, o.y)) { nx = -nx; ny = -ny; o.x = px + nx * r; o.y = py + ny * r; }
           else { o.x += nx * (r - d); o.y += ny * (r - d); }
-          if (!hit || (r - d) > hit.pen) hit = { nx, ny, pen: r - d, kind: 'b' };
+          if (!hit || (r - d) > hit.pen) hit = { nx, ny, pen: r - d, kind: 'b', top: e.b.top };
         }
       }
       // Bäume sind nur Deko (keine Kollision mehr)
@@ -322,7 +480,7 @@ class World {
   solidAt(x, y, z) {
     if (x < 0 || y < 0 || x > this.w || y > this.h) return true;
     const tn = this.tunnelAt(x, y);
-    if (tn && z > tn.floor - 0.2 && z < tn.ceil) { /* im Tunnel: frei */ }
+    if (tn && z > tn.floor - 0.2 && z < tn.ceil) return false;
     else if (z < this.terrain(x, y) - 0.2) return true;
     const ds = this.decksAt(x, y, this._dk3 || (this._dk3 = []));
     for (const dz of ds) if (z <= dz && z > dz - DECK_T) return true;
@@ -550,14 +708,23 @@ class World {
     }
     g.lineCap = 'round'; g.lineJoin = 'round';
     const roads = this.roads.filter(r => vis(r.bb));
+    const asphPat = asphaltPattern(g);
     // Gehwege / Bordstein
-    for (const r of roads) if (r.k <= 1) { g.strokeStyle = COL.sidewalk; g.lineWidth = r.w + 3.2; path(r.p); g.stroke(); }
+    for (const r of roads) if (r.k <= 1) { g.strokeStyle = COL.sidewalk; g.lineWidth = r.w + 3.4; path(r.p); g.stroke(); }
     for (const r of roads) if (r.k === 2) { g.strokeStyle = COL.foot; g.lineWidth = r.w; path(r.p); g.stroke(); }
-    for (const r of roads) if (r.k <= 1) { g.strokeStyle = 'rgba(0,0,0,0.25)'; g.lineWidth = r.w + 0.6; path(r.p); g.stroke(); }
-    for (const r of roads) if (r.k <= 1) { g.strokeStyle = r.k === 0 ? COL.asphaltMain : COL.asphalt; g.lineWidth = r.w; path(r.p); g.stroke(); }
-    // Mittellinien
-    g.setLineDash([3, 4]);
-    for (const r of roads) if (r.k === 0) { g.strokeStyle = 'rgba(240,240,230,0.7)'; g.lineWidth = 0.25; path(r.p); g.stroke(); }
+    for (const r of roads) if (r.k <= 1) { g.strokeStyle = 'rgba(0,0,0,0.32)'; g.lineWidth = r.w + 0.7; path(r.p); g.stroke(); }
+    for (const r of roads) if (r.k <= 1) {
+      g.strokeStyle = r.k === 0 ? COL.asphaltMain : COL.asphalt; g.lineWidth = r.w; path(r.p); g.stroke();
+      if (asphPat) { g.strokeStyle = asphPat; g.lineWidth = r.w - 0.3; path(r.p); g.stroke(); }
+    }
+    // Rand- und Mittellinien
+    for (const r of roads) if (r.k === 0) {
+      g.strokeStyle = 'rgba(235,235,225,0.45)'; g.lineWidth = Math.max(0.2, r.w - 1.2); path(r.p); g.stroke();
+      g.strokeStyle = COL.asphaltMain; g.lineWidth = Math.max(0.1, r.w - 1.65); path(r.p); g.stroke();
+      if (asphPat) { g.strokeStyle = asphPat; g.lineWidth = Math.max(0.1, r.w - 1.65); path(r.p); g.stroke(); }
+    }
+    g.setLineDash([3.2, 3.8]);
+    for (const r of roads) if (r.k === 0 || r.w >= 9) { g.strokeStyle = 'rgba(245,244,234,0.82)'; g.lineWidth = 0.26; path(r.p); g.stroke(); }
     g.setLineDash([]);
     // Bahn
     for (const r of roads) if (r.k === 3) {
@@ -718,14 +885,15 @@ function roofZ(b, x, y) {
   return b.top + f.rise * m;
 }
 
-// Gras: feine helle/dunkle Halme und Flecken (4 m Kachel)
+// Gras: feine helle/dunkle Halme, Wildblumen-Tupfer und natürliche Schattierungen (4 m Kachel)
 let _grass = null;
 function grassPattern(g) {
   if (!_grass) {
     const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
     let h = 12345; const r = () => ((h = (h * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-    for (let i = 0; i < 9; i++) { const gx = r() * 128, gy = r() * 128, rr = 20 + r() * 30, gr = x.createRadialGradient(gx, gy, 0, gx, gy, rr); gr.addColorStop(0, r() < 0.5 ? 'rgba(30,60,10,0.10)' : 'rgba(190,220,120,0.08)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = gr; x.fillRect(0, 0, 128, 128); }
-    for (let i = 0; i < 900; i++) { x.strokeStyle = r() < 0.5 ? 'rgba(25,55,15,0.18)' : 'rgba(170,210,110,0.16)'; x.lineWidth = 1; const px = r() * 128, py = r() * 128; x.beginPath(); x.moveTo(px, py); x.lineTo(px + (r() - 0.5) * 2, py - 2 - r() * 3); x.stroke(); }
+    for (let i = 0; i < 12; i++) { const gx = r() * 128, gy = r() * 128, rr = 18 + r() * 34, gr = x.createRadialGradient(gx, gy, 0, gx, gy, rr); gr.addColorStop(0, r() < 0.5 ? 'rgba(28,58,12,0.12)' : 'rgba(185,220,115,0.09)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = gr; x.fillRect(0, 0, 128, 128); }
+    for (let i = 0; i < 1100; i++) { x.strokeStyle = r() < 0.5 ? 'rgba(22,52,14,0.19)' : 'rgba(170,212,108,0.17)'; x.lineWidth = 1; const px = r() * 128, py = r() * 128; x.beginPath(); x.moveTo(px, py); x.lineTo(px + (r() - 0.5) * 2.2, py - 2 - r() * 3.2); x.stroke(); }
+    for (let i = 0; i < 24; i++) { x.fillStyle = r() < 0.65 ? 'rgba(255,235,120,0.22)' : 'rgba(255,255,255,0.20)'; x.fillRect(r() * 128, r() * 128, 1.5, 1.5); }
     _grass = c;
   }
   try {
@@ -735,17 +903,25 @@ function grassPattern(g) {
     return pt;
   } catch (e) { return null; }
 }
-// Kopfsteinpflaster-Muster (gecacht); fan = Fächerpflaster für Plätze
+// Kopfsteinpflaster-Muster mit Stein-Variationen (gecacht); fan = Fächerpflaster für Plätze
 const _cob = {};
 function cobblePattern(g, fan) {
   const key = fan ? 'f' : 'n';
   if (!_cob[key]) {
     const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
-    x.strokeStyle = fan ? 'rgba(70,60,50,0.22)' : 'rgba(60,55,50,0.13)'; x.lineWidth = 1.4;
+    let h = fan ? 54321 : 98765; const r = () => ((h = (h * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    x.strokeStyle = fan ? 'rgba(65,55,45,0.24)' : 'rgba(55,50,45,0.15)'; x.lineWidth = 1.3;
     if (fan) {
-      for (let cy = 0; cy <= 64; cy += 32) for (let cx = 0; cx <= 64; cx += 32) for (let r = 6; r <= 30; r += 6) { x.beginPath(); x.arc(cx, cy + 16, r, Math.PI * 1.15, Math.PI * 1.85); x.stroke(); }
+      for (let cy = 0; cy <= 64; cy += 32) for (let cx = 0; cx <= 64; cx += 32) for (let rad = 6; rad <= 30; rad += 6) { x.beginPath(); x.arc(cx, cy + 16, rad, Math.PI * 1.15, Math.PI * 1.85); x.stroke(); }
     } else {
-      for (let y = 0; y < 64; y += 8) { x.beginPath(); x.moveTo(0, y); x.lineTo(64, y); x.stroke(); for (let xx = (y / 8) % 2 ? 4 : 0; xx < 64; xx += 8) { x.beginPath(); x.moveTo(xx, y); x.lineTo(xx, y + 8); x.stroke(); } }
+      for (let y = 0; y < 64; y += 8) {
+        x.beginPath(); x.moveTo(0, y); x.lineTo(64, y); x.stroke();
+        for (let xx = (y / 8) % 2 ? 4 : 0; xx < 64; xx += 8) {
+          x.fillStyle = r() < 0.5 ? 'rgba(0,0,0,0.035)' : 'rgba(255,255,255,0.04)';
+          x.fillRect(xx + 1, y + 1, 6, 6);
+          x.beginPath(); x.moveTo(xx, y); x.lineTo(xx, y + 8); x.stroke();
+        }
+      }
     }
     _cob[key] = c;
   }
@@ -753,6 +929,31 @@ function cobblePattern(g, fan) {
     const pt = g.createPattern(_cob[key], 'repeat');
     if (!pt || !pt.setTransform || typeof DOMMatrix === 'undefined') return null;
     pt.setTransform(new DOMMatrix().scale(2 / 64));
+    return pt;
+  } catch (e) { return null; }
+}
+// Subtiles Asphalt-Korn für 2D/3D-Kacheln
+let _asph = null;
+function asphaltPattern(g) {
+  if (!_asph) {
+    const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+    let h = 24680; const r = () => ((h = (h * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    for (let i = 0; i < 8; i++) {
+      const gx = r() * 128, gy = r() * 128, rr = 18 + r() * 28, gr = x.createRadialGradient(gx, gy, 0, gx, gy, rr);
+      gr.addColorStop(0, r() < 0.5 ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.045)');
+      gr.addColorStop(1, 'rgba(0,0,0,0)');
+      x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+    }
+    for (let i = 0; i < 650; i++) {
+      x.fillStyle = r() < 0.52 ? 'rgba(0,0,0,0.09)' : 'rgba(235,240,250,0.07)';
+      x.fillRect(r() * 128, r() * 128, 1 + r() * 1.2, 1 + r() * 1.2);
+    }
+    _asph = c;
+  }
+  try {
+    const pt = g.createPattern(_asph, 'repeat');
+    if (!pt || !pt.setTransform || typeof DOMMatrix === 'undefined') return null;
+    pt.setTransform(new DOMMatrix().scale(6 / 128));
     return pt;
   } catch (e) { return null; }
 }
