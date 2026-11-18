@@ -1,0 +1,4 @@
+# Nicht mit hochladen
+.assetsignore
+.nojekyll
+netlify.toml
