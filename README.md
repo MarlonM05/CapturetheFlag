@@ -15,7 +15,7 @@ Wichtig: Unter *Site configuration → Access & security → Visitor access* mus
 **Variante C – Cloudflare:** `wrangler.jsonc` ist schon da und veröffentlicht den Ordner `site/`. Im Cloudflare-Dashboard
 *Workers & Pages → Create → Import a repository* → dieses Repo wählen, Projektname `capturetheflag`, Build-Befehl leer,
 Deploy-Befehl `npx wrangler deploy`. Danach geht jeder Push auf `main` automatisch online unter
-`https://capturetheflag.<dein-subdomain>.workers.dev`.
+`https://ctf.marlongames.com` (Startseite mit allen Spielen: `https://marlongames.com`).
 
 Lokal: im Ordner `site` `python3 -m http.server` starten und `http://localhost:8000` öffnen.
 

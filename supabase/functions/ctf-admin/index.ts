@@ -22,7 +22,7 @@ const MAX_BYTES = 2 * 1024 * 1024;
 const TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
 const ID_RE = /^[a-z0-9-]{1,40}$/;
 const NAME_RE = /^[A-Za-zÄÖÜäöüß0-9 _.-]{1,24}$/;
-const ORIGIN_OK = /^(https:\/\/marlonm05\.github\.io|https:\/\/[a-z0-9-]+(--[a-z0-9-]+)?\.netlify\.app|http:\/\/localhost:\d+|http:\/\/127\.0\.0\.1:\d+)$/;
+const ORIGIN_OK = /^(https:\/\/marlonm05\.github\.io|https:\/\/([a-z0-9-]+\.)?marlongames\.com|https:\/\/[a-z0-9-]+(--[a-z0-9-]+)?\.netlify\.app|http:\/\/localhost:\d+|http:\/\/127\.0\.0\.1:\d+)$/;
 const enc = new TextEncoder();
 
 const toB64 = (u: Uint8Array) => btoa(String.fromCharCode(...u));
