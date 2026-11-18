@@ -40,14 +40,15 @@ function upgradeCost(lvl) { return Math.round(150 * Math.pow(lvl + 1, 1.6) / 10)
 
 // Waffen
 const WEAPONS = {
-  mg: { name: 'Doppel-MG', speed: 125, life: 0.5, spread: 0.035, count: 1, splash: 0, size: 0.35, color: '#ffe27a', sound: 'mg', baseDmg: 8.5, baseRate: 7.0 },
-  minigun: { name: 'Minigun', speed: 120, life: 0.48, spread: 0.085, count: 1, splash: 0, size: 0.3, color: '#ffd04d', sound: 'mini', baseDmg: 3.5, baseRate: 16.0 },
-  burst: { name: 'Salven-Kanone', speed: 112, life: 0.58, spread: 0.024, count: 2, splash: 0, size: 0.38, color: '#6ee7ff', sound: 'mg', baseDmg: 11.5, baseRate: 4.5 },
-  cannon: { name: 'Kanone', speed: 72, life: 1.1, spread: 0.01, count: 1, splash: 4.5, size: 0.7, color: '#ffb347', sound: 'cannon', baseDmg: 42, baseRate: 0.9 },
-  plasma: { name: 'Plasma-Blaster', speed: 84, life: 0.85, spread: 0.015, count: 1, splash: 3.2, size: 0.56, color: '#d580ff', sound: 'cannon', baseDmg: 32, baseRate: 2.5 },
-  rocket: { name: 'Raketen', speed: 42, life: 1.9, spread: 0.02, count: 1, splash: 5, size: 0.55, color: '#ff7b39', homing: 0.32, accel: 22, maxSpeed: 68, sound: 'rocket', baseDmg: 36, baseRate: 1.45 },
-  shotgun: { name: 'Schrotflinte', speed: 95, life: 0.3, spread: 0.24, count: 7, splash: 0, size: 0.3, color: '#fff1b0', sound: 'shotgun', baseDmg: 6.2, baseRate: 1.75 },
-  railgun: { name: 'Goldene Railgun', speed: 165, life: 0.75, spread: 0.003, count: 1, splash: 4.0, size: 0.65, color: '#ffd700', sound: 'cannon', baseDmg: 85, baseRate: 1.25 },
+  // ap = Panzerbrechung: Zusatzschaden gegen schwere Fahrzeuge (skaliert mit der Fahrzeugmasse, Tank = voller Bonus)
+  mg: { name: 'Doppel-MG', speed: 170, life: 0.8, spread: 0.03, count: 1, splash: 0, size: 0.35, color: '#ffe27a', sound: 'mg', baseDmg: 11, baseRate: 7.0, ap: 0.35 },
+  minigun: { name: 'Minigun', speed: 165, life: 0.75, spread: 0.075, count: 1, splash: 0, size: 0.3, color: '#ffd04d', sound: 'mini', baseDmg: 5, baseRate: 16.0, ap: 0.3 },
+  burst: { name: 'Salven-Kanone', speed: 155, life: 0.85, spread: 0.02, count: 2, splash: 0, size: 0.38, color: '#6ee7ff', sound: 'mg', baseDmg: 15, baseRate: 4.5, ap: 0.45 },
+  cannon: { name: 'Kanone', speed: 105, life: 1.5, spread: 0.008, count: 1, splash: 4.5, size: 0.7, color: '#ffb347', sound: 'cannon', baseDmg: 58, baseRate: 0.9, ap: 0.5 },
+  plasma: { name: 'Plasma-Blaster', speed: 115, life: 1.25, spread: 0.012, count: 1, splash: 3.2, size: 0.56, color: '#d580ff', sound: 'cannon', baseDmg: 42, baseRate: 2.5, ap: 0.6 },
+  rocket: { name: 'Raketen', speed: 55, life: 2.9, spread: 0.02, count: 1, splash: 5, size: 0.55, color: '#ff7b39', homing: 0.32, accel: 28, maxSpeed: 90, sound: 'rocket', baseDmg: 48, baseRate: 1.45, ap: 0.5 },
+  shotgun: { name: 'Schrotflinte', speed: 125, life: 0.5, spread: 0.2, count: 7, splash: 0, size: 0.3, color: '#fff1b0', sound: 'shotgun', baseDmg: 8.2, baseRate: 1.75, ap: 0.25 },
+  railgun: { name: 'Goldene Railgun', speed: 230, life: 1.0, spread: 0.002, count: 1, splash: 4.0, size: 0.65, color: '#ffd700', sound: 'cannon', baseDmg: 110, baseRate: 1.25, ap: 0.9 },
 };
 
 // Fahrzeugklassen (alle frei wählbar). base = Stufe 0, per = Zuwachs pro Garagen-Upgrade
@@ -109,9 +110,9 @@ function carStats(car, lv, ups) {
     accel: (b.accel + p.accel * m) * us,
     turn: b.turn + 0.04 * m,
     hp: Math.round((b.hp + p.hp * a) * 1.7 * ua),
-    dmg: (b.dmg + p.dmg * w) * ud,
+    dmg: (b.dmg + p.dmg * w) * ud * 1.3,   // +30 % Grundschaden
     rate: b.rate + p.rate * f,
-    boost: (b.boost + p.boost * t) * 1.5,
+    boost: (b.boost + p.boost * t) * 2.0,   // größerer Tank für kontrollierte Aerials
     boostRegen: 0.5 + 0.06 * t,
     jump: (b.jump + p.jump * s) * 1.5,   // hoch genug, um mit Nitro über Dächer zu springen
     jumpCd: Math.max(0.35, 0.55 - 0.04 * s),   // schnell wieder springen
@@ -122,9 +123,9 @@ function carStats(car, lv, ups) {
 const STAT_BARS = [
   { k: 'speed', name: 'Tempo', max: 42 },
   { k: 'hp', name: 'Schutz', max: 740 },
-  { k: 'dps', name: 'Feuerkraft', max: 90 },
+  { k: 'dps', name: 'Feuerkraft', max: 125 },
   { k: 'rate', name: 'Feuerrate', max: 26 },
-  { k: 'boost', name: 'Nitro', max: 6.5 },
+  { k: 'boost', name: 'Nitro', max: 8.5 },
   { k: 'jump', name: 'Sprung', max: 24 },
 ];
 function carDps(car, st) {
