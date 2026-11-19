@@ -868,7 +868,7 @@ class Game {
     let vF = c.vx * fx + c.vy * fy, vL = -c.vx * fy + c.vy * fx;
     // Turbo (in der Luft schnellerer Verbrauch gegen unendliches Fliegen)
     c.boosting = playing && inp.boost && c.boost > 0.02 && (thr >= 0 || !onGround);
-    if (c.boosting) { c.boost = Math.max(0, c.boost - dt * (onGround ? 0.85 : 1.7)); }   // in der Luft brennt der Raketenschub schneller ab
+    if (c.boosting) { c.boost = Math.max(0, c.boost - dt * (onGround ? 0.85 : 1.95)); }   // in der Luft brennt der Raketenschub schneller ab
     else {
       // Nitro lädt schneller beim Driften, in der Luft nur minimal
       // Nitro lädt nur am Boden nach (in der Luft kein Nachtanken -> keine Dauerflüge)
@@ -985,7 +985,7 @@ class Game {
         // Kein Auftrieb: die Schwerkraft zieht immer voll. Der Schub (~0,9 g) bleibt klar unter der Schwerkraft: Nase hoch streckt den Bogen, trägt aber nicht
         // -> kurze Bögen statt Dauerflug. Nase runter oder Überschlag drückt das Auto zum Boden.
         const pc = angNorm(c.pitch || 0), cpc = Math.cos(pc), spc = Math.sin(pc);
-        const thrust = GRAV * (0.86 + st.accel * 0.002);
+        const thrust = GRAV * (0.76 + st.accel * 0.002);   // etwas schwächer: Nase hoch streckt den Sprung, trägt aber nicht lange
         if (cpc >= 0 ? vF < st.speed * 1.5 : true) vF = clamp(vF + thrust * cpc * dt, -st.speed * 0.6, st.speed * 1.5);
         c.vz = Math.max(-30, Math.min(c.vz + thrust * spc * dt, 16));
         if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6 * cpc, y: c.y - fy * c.def.len * 0.6 * cpc, zAbs: c.z + 0.6 - spc * c.def.len * 0.5, vz: -spc * 12 - 1, vx: -fx * 12 * cpc + rand(-2, 2), vy: -fy * 12 * cpc + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });

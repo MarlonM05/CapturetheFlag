@@ -1466,7 +1466,7 @@ class Renderer3D {
     for (const r of W.ramps) {
       const L = r.len, Wd = r.wid, H = r.big ? 2.2 : 1.5;
       const x0 = -L / 2, xLip = -L / 2 + L * 0.22, x1 = L / 2;
-      const hLip = 0.22 * H;
+      const hLip = 0.1236 * H;   // wie RAMP_H0 in world.js (knickfreier Einlauf)
       const g = this.track(new THREE.BufferGeometry());
       const v = [
         // Sanfter Einlauf-Keil vorne (0..22%)

@@ -27,6 +27,7 @@ const TILE_PX = 512;       // Kachelgröße in Pixeln (Meter = TILE_PX / Zoom)
 const NAV = 2;             // Navigationsraster in Metern
 const STEP = 0.9;          // so hohe Kanten fährt ein Auto einfach hoch
 const DECK_T = 1.2;        // Dicke einer Brückenplatte
+const RAMP_S = 1 / 0.89, RAMP_H0 = RAMP_S * 0.11;   // Schanzenprofil: Hauptschräge ab 22 % mit Steigung RAMP_S, Lippe bei RAMP_H0
 const STEEP = 0.45;        // ab dieser Steigung ist Gelände eine Wand (für Bots)
 const HASH = 8;            // Kollisions-Hash in Metern
 const CAM_H = 170;         // Kamerahöhe für die Perspektive
@@ -357,9 +358,56 @@ class World {
         }
       }
     }
+    this.widenRamps();
     this.buildNav();
     this.tiles = new Map();
     this.tileZ = 0;
+  }
+
+  // Schanzen auf der ganzen Karte breiter machen (~1,6x), aber nur so weit, wie Platz ist:
+  // keine Überlappung mit Häusern, Wasser, Brücken, Leitplanken, Tunnelportalen, anderen Schanzen oder steilem Gelände
+  widenRamps() {
+    const inRect = (o, x, y, m) => {
+      const dx = x - o.x, dy = y - o.y, u = dx * o.ca + dy * o.sa, v = -dx * o.sa + dy * o.ca;
+      return Math.abs(u) <= o.len / 2 + m && Math.abs(v) <= o.wid / 2 + m;
+    };
+    const segD = (r, x, y) => {
+      const dx = r.bx - r.ax, dy = r.by - r.ay, L2 = dx * dx + dy * dy || 1;
+      const t = clampW(((x - r.ax) * dx + (y - r.ay) * dy) / L2, 0, 1);
+      return Math.hypot(x - r.ax - dx * t, y - r.ay - dy * t);
+    };
+    const dk = [];
+    const fits = (r, wid) => {
+      const roof = r.rz !== undefined ? this.buildingAt(r.x, r.y) : null;
+      const hu = r.len / 2 + 1.0, hv = wid / 2 + 1.0;
+      for (let u = -hu; u <= hu + 0.01; u += hu / 4) for (let v = -hv; v <= hv + 0.01; v += Math.max(1.2, hv / 5)) {
+        const x = r.x + r.ca * u - r.sa * v, y = r.y + r.sa * u + r.ca * v;
+        if (x < 6 || y < 6 || x > this.w - 6 || y > this.h - 6) return false;
+        if (roof) { if (this.buildingAt(x, y) !== roof) return false; continue; }
+        if (this.buildingAt(x, y) || this.inWater(x, y) || this.isPortalHole(x, y) || this.tunnelAt(x, y, 3)) return false;
+        if (this.decksAt(x, y, dk).length) return false;
+        if (Math.abs(this.rawTerrain(x, y) - r.baseZ) > 1.3) return false;
+        for (const o of this.ramps) if (o !== r && inRect(o, x, y, 1.5)) return false;
+        for (const rl of this.rails) if (segD(rl, x, y) < 1.2) return false;
+      }
+      return true;
+    };
+    for (const r of this.ramps) {
+      const w0 = r.wid, target = Math.min(Math.max(w0 * 1.6, 8.5), 16);
+      let w = target;
+      while (w > w0 + 0.4 && !fits(r, w)) w -= 0.8;
+      r.wid = Math.max(w0, Math.round(w * 10) / 10);
+    }
+    // Rampen-Untergrund-Hash mit der neuen Breite neu aufbauen
+    this.hFlat = Array.from({ length: this.hw * this.hh }, () => []);
+    for (const r of this.ramps) {
+      if (r.rz !== undefined || this.inWater(r.x, r.y)) continue;
+      const pad = Math.max(r.len, r.wid) * 0.6 + 6;
+      const x0 = Math.max(0, Math.floor((r.x - pad) / HASH)), x1 = Math.min(this.hw - 1, Math.floor((r.x + pad) / HASH));
+      const y0 = Math.max(0, Math.floor((r.y - pad) / HASH)), y1 = Math.min(this.hh - 1, Math.floor((r.y + pad) / HASH));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) this.hFlat[y * this.hw + x].push(r);
+    }
+    this.trees = this.trees.filter(t => !this.ramps.some(r => r.rz === undefined && inRect(r, t.x, t.y, 3)));
   }
 
   // ---------------- Kollisions-Hash ----------------
@@ -584,8 +632,9 @@ class World {
       if (u < -L / 2 - 0.8 || u > L / 2 + 0.35 || Math.abs(v) > Wd / 2 + 0.25) continue;
       const tRaw = clampW((u + L / 2) / L, 0, 1);
       // Sanfter Einlauf an der Unterkante (kein Hängenbleiben an der Rampe)
-      const t = tRaw < 0.22 ? (tRaw * tRaw) / 0.22 * 0.8 + tRaw * 0.2 : tRaw;
-      const dtdU = (tRaw < 0.22 ? (2 * tRaw / 0.22 * 0.8 + 0.2) : 1) / L;
+      // Einlauf (erste 22 %) quadratisch von Steigung 0 bis genau zur Steigung der Hauptschräge -> kein Knick, an dem man vorzeitig abhebt
+      const t = tRaw < 0.22 ? RAMP_S * tRaw * tRaw / 0.44 : RAMP_H0 + RAMP_S * (tRaw - 0.22);
+      const dtdU = (tRaw < 0.22 ? RAMP_S * tRaw / 0.22 : RAMP_S) / L;
       const H = r.big ? 2.2 : 1.5;
       const baseZ = r.rz !== undefined ? r.rz : this.terrain(r.x, r.y);
       return { z: baseZ + H * t, sx: ca * H * dtdU, sy: sa * H * dtdU, r, t: tRaw, alongX: ca, alongY: sa };

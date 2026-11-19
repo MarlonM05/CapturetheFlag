@@ -315,9 +315,19 @@ def main():
         sa, sb = s - half_span, s + half_span
         A, B, C, D = (line.interpolate(v) for v in (sa - ramp, sa, sb, sb + ramp))
         za, zd = sample(hz, A.x, A.y), sample(hz, D.x, D.y)
-        embank.append(([(A.x, A.y), (B.x, B.y)], (za, zb), w))
-        embank.append(([(C.x, C.y), (D.x, D.y)], (zb, zd), w))
-        decks.append(dict(p=[R1(B.x), R1(B.y), R1(zb), R1(C.x), R1(C.y), R1(zb)], w=w + 2, s=(sa, sb), route=tuple(route_pts)))
+        # Dämme folgen der echten Straßenführung (nicht der Sehne), sonst laufen Böschung und Leitplanken in Kurven quer über die Fahrbahn
+        from shapely.ops import substring
+        embank.append((list(substring(line, max(0.0, sa - ramp), sa).coords), (za, zb), w))
+        embank.append((list(substring(line, sb, min(line.length, sb + ramp)).coords), (zb, zd), w))
+        # Brücke so breit wie der Abstand der Damm-Leitplanken (Geländer laufen nahtlos weiter). Dazu je eine 4 m lange,
+        # mit dem Damm geneigte Anschlussplatte: deckt den Übergang Damm -> Brücke ab (kein Spalt, keine Kante, kein Graben)
+        AP = 4.0
+        B2, C2 = line.interpolate(sa - AP), line.interpolate(sb + AP)
+        zB2, zC2 = za + (zb - za) * (ramp - AP) / ramp, zb + (zd - zb) * AP / ramp
+        dw = w + 4.4
+        decks.append(dict(p=[R1(B2.x), R1(B2.y), R1(zB2), R1(B.x), R1(B.y), R1(zb)], w=dw, ap=1, s=(sa - AP, sa), route=tuple(route_pts)))
+        decks.append(dict(p=[R1(B.x), R1(B.y), R1(zb), R1(C.x), R1(C.y), R1(zb)], w=dw, s=(sa, sb), route=tuple(route_pts)))
+        decks.append(dict(p=[R1(C.x), R1(C.y), R1(zb), R1(C2.x), R1(C2.y), R1(zC2)], w=dw, ap=1, s=(sb, sb + AP), route=tuple(route_pts)))
 
     for name, w, k, pts in ROUTES:
         line = LineString(pts)
@@ -332,33 +342,46 @@ def main():
 
     # Leitplanken auf den hohen Teilen der Dämme
     rails = []
-    for (pa, pb), (za, zb), w in embank:
+    for pts_e, (za, zb), w in embank:
         lo, hi = (za, zb) if zb >= za else (zb, za)
         if hi - lo < 1.2:
             continue
-        # Abschnitt, auf dem der Damm höher als 1,5 m ist (zur Brücke hin)
+        # Abschnitt, auf dem der Damm höher als 0,6 m ist (zur Brücke hin), entlang der Straßenkurve
+        el = LineString(pts_e); L = el.length
         f0 = 0.6 / (hi - lo)   # Leitplanke schon ab 0,6 m Dammhöhe (kein schräges Abheben über die Böschung)
-        if zb >= za:
-            p1, p2, z1, z2 = (pa[0] + (pb[0] - pa[0]) * f0, pa[1] + (pb[1] - pa[1]) * f0), pb, za + 0.6, zb
-        else:
-            p1, p2, z1, z2 = pa, (pb[0] + (pa[0] - pb[0]) * f0, pb[1] + (pa[1] - pb[1]) * f0), za, zb + 0.6
-        L = math.hypot(p2[0] - p1[0], p2[1] - p1[1]) or 1
-        rnx, rny = -(p2[1] - p1[1]) / L, (p2[0] - p1[0]) / L
+        a0, a1 = (f0 * L, L) if zb >= za else (0.0, L * (1 - f0))
+        from shapely.ops import substring
+        part = substring(el, a0, a1)
+        n = max(2, int(part.length / 6) + 1)
+        cpts = [part.interpolate(v) for v in np.linspace(0, part.length, n)]
+        zs = [za + (zb - za) * el.project(c) / L for c in cpts]
         off = w / 2 + 2.2
         for sgn in (1, -1):
-            rails.append(dict(p=[R1(p1[0] + rnx * off * sgn), R1(p1[1] + rny * off * sgn), R1(z1), R1(p2[0] + rnx * off * sgn), R1(p2[1] + rny * off * sgn), R1(z2)]))
+            for k in range(n - 1):
+                c0, c1 = cpts[k], cpts[k + 1]
+                # Normale aus der lokalen Richtung (an den Enden die Nachbarsegmente)
+                def nrm(i):
+                    q0, q1 = cpts[max(0, i - 1)], cpts[min(n - 1, i + 1)]
+                    dx, dy = q1.x - q0.x, q1.y - q0.y; l = math.hypot(dx, dy) or 1
+                    return -dy / l, dx / l
+                n0, n1 = nrm(k), nrm(k + 1)
+                rails.append(dict(p=[R1(c0.x + n0[0] * off * sgn), R1(c0.y + n0[1] * off * sgn), R1(zs[k]),
+                                     R1(c1.x + n1[0] * off * sgn), R1(c1.y + n1[1] * off * sgn), R1(zs[k + 1])]))
 
     # Rampen in die Höhenkarte einbauen (Damm mit steilen Seiten)
-    for (pa, pb), (za, zb), w in embank:
-        d, arc = seg_dist([pa, pb])
-        L = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
+    for pts_e, (za, zb), w in embank:
+        d, arc = seg_dist(pts_e)
+        L = LineString(pts_e).length
         prof = za + (zb - za) * np.clip(arc / L, 0, 1)
-        target = prof - np.maximum(0, d - (w / 2 + 2.6)) * 1.8
+        target = prof - np.maximum(0, d - (w / 2 + 4.6)) * 1.8   # flache Krone bis 2,4 m hinter die Leitplanken (4-m-Raster franst sonst innerhalb ab)
         # nicht unter die Brücke hinein aufschütten: Punkte jenseits des brückenseitigen Endes bleiben frei
-        ux, uy = (pb[0] - pa[0]) / L, (pb[1] - pa[1]) / L
-        along = (gx - pa[0]) * ux + (gy - pa[1]) * uy
-        beyond = (along > L - 0.5) if zb >= za else (along < 0.5)
-        hz = np.where((d < w / 2 + 2.6 + 20) & ~beyond, np.maximum(hz, target), hz)
+        if zb >= za:
+            (qx, qy), (ex, ey) = pts_e[-2], pts_e[-1]
+        else:
+            (qx, qy), (ex, ey) = pts_e[1], pts_e[0]
+        tl = math.hypot(ex - qx, ey - qy) or 1
+        beyond = ((gx - ex) * (ex - qx) + (gy - ey) * (ey - qy)) / tl > -0.5
+        hz = np.where((d < w / 2 + 4.6 + 20) & ~beyond, np.maximum(hz, target), hz)
 
     # ---- Basilika-Vorplatz (Terrasse) ----
     tp = terrace_poly()
@@ -605,7 +628,7 @@ def main():
     ramps = []
     # Breite Sprungschanzen direkt vor dem Ufer (neben den Brücken und auf den Wiesen), Blick quer über die Schussen
     rl = LineString(RIVER)
-    bridge_x = [ (dk["p"][0] + dk["p"][3]) / 2 for dk in decks if abs((dk["p"][1] + dk["p"][4]) / 2 - 870) < 40]
+    bridge_x = [ (dk["p"][0] + dk["p"][3]) / 2 for dk in decks if not dk.get("ap") and abs((dk["p"][1] + dk["p"][4]) / 2 - 870) < 40]
     spots = sorted(set([bx + o for bx in bridge_x for o in (-34, 34)] + [100, 800]))
     for sx in spots:
         s = rl.project(Point(sx, 870))
