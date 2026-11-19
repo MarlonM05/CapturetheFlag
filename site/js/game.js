@@ -236,10 +236,10 @@ class Car {
     this.turret = this.a; this.tpitch = 0;
     this.pitch = 0; this.pitchV = 0; this.roll = 0; this.rollV = 0; this.flipAcc = 0; this.dodgeT = 0; this.dodgeRollDir = 0;
     this.coyoteT = 0.14; this.jumpBufT = 0; this.jumpHeld = false; this.airJumps = this.bot ? 0 : 1;
-    this.hp = this.st.hp; this.boost = this.st.boost; this.boosting = false;
+    this.hp = this.st.hp; this.boost = this.st.boost; this.boosting = false; this.boostEmpty = false;
     this.jumpCd = 0; this.fireCd = 0; this.mines = 2; this.mineCd = 0; this.mineRegen = 0;
     this.alive = true; this.protect = first ? 0 : 2.5; this.flag = -1; this.flashT = 0;
-    this.life = (this.life || 0) + 1; this.rs = null; this.sunk = false; this.crashAcc = 0; this.steerS = 0;
+    this.life = (this.life || 0) + 1; this.rs = null; this.sunk = false; this.crashAcc = 0; this.steerS = 0; this.noDmgT = 0;
     this.hitBy = new Map(); this.sinkT = 0; this.rampCd = 0; this.smokeT = 0; this.airT = 0;
     this.lastSkid = null;
   }
@@ -270,7 +270,7 @@ class Game {
     this.cam = { x: 0, y: 0 };
     this.mini = this.world.renderMini(1100);
     this.props = this.map.crates.map(c => ({ ...c, ...PROP[c.t], z: this.world.terrain(c.x, c.y), alive: true, hpNow: PROP[c.t].hp, respawnT: 0 }));
-    this.pickups = this.map.pickups.map(p => ({ ...p, z: this.world.terrain(p.x, p.y), active: true, t2: 0 }));
+    this.pickups = (this.world.pickups || this.map.pickups).map(p => ({ ...p, z: p.z !== undefined ? p.z : this.world.terrain(p.x, p.y), active: true, t2: 0 }));
     this.flags = this.world.bases.map((b, i) => ({ team: i, state: 'base', x: b.x, y: b.y, z: this.world.terrain(b.x, b.y), carrier: null, dropT: 0 }));
     this.particles.world = this.world;
     this.demo = !!opts.demo;
@@ -528,6 +528,12 @@ class Game {
         c.respawnT -= dt;
         if (c.respawnT <= 0 && this.state !== 'over') c.spawn(false);
         continue;
+      }
+      if (playing && this.state !== 'over') {
+        c.noDmgT = (c.noDmgT || 0) + dt;
+        if (c.noDmgT >= 30 && c.hp < c.st.hp) {
+          c.hp = Math.min(c.st.hp, c.hp + Math.max(12, c.st.hp * 0.08) * dt);
+        }
       }
       if (c.bot) this.think(c, dt);
       if (playing && this.state !== 'over') this.weapons(c, dt); else c.input.fire = false;
@@ -815,13 +821,17 @@ class Game {
     }
     const fx = Math.cos(c.a), fy = Math.sin(c.a);
     let vF = c.vx * fx + c.vy * fy, vL = -c.vx * fy + c.vy * fx;
-    // Turbo (in der Luft schnellerer Verbrauch gegen unendliches Fliegen)
-    c.boosting = playing && inp.boost && c.boost > 0.02 && (thr >= 0 || !onGround);
-    if (c.boosting) { c.boost = Math.max(0, c.boost - dt * (onGround ? 0.85 : 1.2)); }
-    else {
-      // Nitro lädt schneller beim Driften, in der Luft nur minimal
-      const bonus = (c.drifting && Math.hypot(c.vx, c.vy) > 8 ? 0.7 : 0) + (!onGround ? 0.08 : 0);
-      c.boost = Math.min(st.boost, c.boost + (st.boostRegen + bonus) * dt);
+    // Turbo (in der Luft kein Nachladen und kein Mikro-Pulsen nach leerem Tank -> echtes Ende des Steigflugs)
+    c.boosting = playing && inp.boost && !c.boostEmpty && c.boost > 0.02 && (thr >= 0 || !onGround);
+    if (c.boosting) {
+      c.boost = Math.max(0, c.boost - dt * (onGround ? 0.85 : 1.2));
+      if (c.boost <= 0.02) c.boostEmpty = true;
+    } else {
+      if (onGround && c.boost > 0.2) c.boostEmpty = false;
+      if (onGround) {
+        const bonus = c.drifting && Math.hypot(c.vx, c.vy) > 8 ? 0.7 : 0;
+        c.boost = Math.min(st.boost, c.boost + (st.boostRegen + bonus) * dt);
+      }
     }
     const wz = W.waterAt(c.x, c.y);
     const surfWater = wz !== null && c.groundKind !== 'deck' && c.groundKind !== 'roof' && c.groundKind !== 'ramp' && c.z < wz + 0.5;
@@ -893,10 +903,10 @@ class Game {
       }
       // Luftlage (Rocket-League-Stil): S neigt die Nase nach oben, W nach unten. Nitro schiebt strikt entlang der Nase –
       // Höhe gewinnt nur, wer die Nase aktiv zum Himmel richtet (kein automatisches Schweben).
-      const hgt = c.z - c.groundZ, nearGround = hgt < 4.5 && c.vz < 0;
+      const pt = c.bot ? 0 : thr;
+      const hgt = c.z - c.groundZ, nearGround = hgt < 4.5 && c.vz < 0 && !(c.boosting && pt < 0 && c.vz > -6);
       const up = Math.round((c.pitch || 0) / (Math.PI * 2)) * Math.PI * 2;
       let wantV;
-      const pt = c.bot ? 0 : thr;
       c.pitchV = (c.pitchV || 0) * Math.exp(-dt * 4.5);
       if (c.dodgeT > 0) {
         c.dodgeT -= dt;
@@ -930,11 +940,12 @@ class Game {
       c.lastSkid = null;
       if (c.boosting) {
         // Nitro-Schub strikt entlang der Fahrzeugnase: waagerecht bei flacher Nase, Steigen nur mit nach oben gerichteter Nase.
-        // Kein Anti-Gravitations-Auftrieb – erst ab ca. 40° Neigung nach oben überwindet der Schub die Schwerkraft.
-        const pc = clamp(c.pitch || 0, -1.45, 1.45), cpc = Math.cos(pc), spc = Math.sin(pc);
+        // Kein Anti-Gravitations-Auftrieb – aber kräftiger Düsenschub beim Nase-hoch-Ziehen, um auch hohe Dächer zu erklimmen.
+        const pc = clamp(angNorm(c.pitch || 0), -1.45, 1.45), cpc = Math.cos(pc), spc = Math.sin(pc);
         const thrust = GRAV * (1.68 + st.accel * 0.005);
+        const upMul = spc > 0 ? 1 + 0.72 * spc : 1;
         if (vF < st.speed * 1.5) vF = Math.min(vF + thrust * cpc * dt, st.speed * 1.5);
-        c.vz = Math.min(c.vz + thrust * spc * dt, 26);
+        c.vz = Math.min(c.vz + thrust * upMul * spc * dt, 32);
         if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6 * cpc, y: c.y - fy * c.def.len * 0.6 * cpc, zAbs: c.z + 0.6 - spc * c.def.len * 0.5, vz: -spc * 12 - 1, vx: -fx * 12 * cpc + rand(-2, 2), vy: -fy * 12 * cpc + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
       }
     }
@@ -1154,7 +1165,7 @@ class Game {
     p.alive = false; p.respawnT = 45;
     this.breakPropFx(p, by);
     // Zufallsbelohnung in Kisten
-    if (Math.random() < 0.35) this.pickups.push({ x: p.x, y: p.y, t: Math.random() < 0.5 ? 0 : 2, active: true, t2: 0, temp: 15 });
+    if (Math.random() < 0.35) this.pickups.push({ x: p.x, y: p.y, z: p.z, t: Math.random() < 0.5 ? 0 : 2, active: true, t2: 0, temp: 15 });
   }
   breakPropFx(p, by) {
     Sound.play('crate', this.vol(p.x, p.y));
@@ -1379,7 +1390,7 @@ class Game {
     // Panzerbrechung: Treffer gegen schwere Fahrzeuge (hohe Masse, z. B. Panzer/Bock) richten Zusatzschaden an
     if ((kind === 'shot' || kind === 'boom') && by && by.w && by.w.ap) amt *= 1 + by.w.ap * clamp((c.def.mass - 1.1) / 1.5, 0, 1);
     if (c.flag >= 0) amt *= 0.7;   // Flaggenträger halten etwas mehr aus (große Karte)
-    c.hp -= amt; c.flashT = 0.08;
+    c.hp -= amt; c.flashT = 0.08; c.noDmgT = 0;
     if (by && by !== c) { c.hitBy.set(by, performance.now()); c.lastAttacker = by; c.lastAttackT = performance.now(); }
     if (c.bot) c.bot.hurtT = 1.2;
     if (by && kind !== 'crash' && by !== c) {
@@ -1528,12 +1539,12 @@ class Game {
         if (p.t === 0 && c.hp >= c.st.hp) continue;
         if (p.t === 2 && !c.human) continue;
         if (p.t === 0) c.hp = Math.min(c.st.hp, c.hp + c.st.hp * 0.45);
-        else if (p.t === 1) { c.boost = c.st.boost; c.mines = Math.min(3, c.mines + 1); }
+        else if (p.t === 1) { c.boost = c.st.boost; c.boostEmpty = false; c.mines = Math.min(3, c.mines + 1); }
         else this.earn(60, p.x, p.y, '', c);
         this.pickupFx(c, p.t);
         if (this.isHost) this.events.push(['p', c.id, p.t]);
         if (p.temp !== undefined) { this.pickups.splice(i, 1); }
-        else { p.active = false; p.t2 = 20; }
+        else { p.active = false; p.t2 = p.t === 1 ? 6 : p.t === 0 ? 8 : 10; }
         break;
       }
     }
@@ -1571,7 +1582,7 @@ class Game {
         c.killedBy ? c.killedBy.id : 0, r1(c.vz), c.life, c.xp, c.pts, '' + c.ups.spd + c.ups.arm + c.ups.dmg, r2(c.pitch || 0), r2(c.tpitch || 0), c.ggTier || 0]),
       f: this.flags.map(f => [f.state, r1(f.x), r1(f.y), f.carrier ? f.carrier.id : 0, r1(f.dropT), r1(f.z)]),
       pr: this.props.map(p => (p.alive ? 1 : 0)).join(''),
-      pk: this.pickups.map(p => [r1(p.x), r1(p.y), p.t, p.active ? 1 : 0]),
+      pk: this.pickups.map(p => [r1(p.x), r1(p.y), p.t, p.active ? 1 : 0, r1(p.z || 0)]),
       m: this.mines.map(m => [r1(m.x), r1(m.y), m.team, m.arm > 0 ? 0 : 1, r1(m.z || 0)]),
       ev: this.events,
     };
@@ -1620,6 +1631,7 @@ class Game {
     }
     // eigenes Auto lokal vorhersagen
     if (me.alive && this.state !== 'over') {
+      if (playing) me.noDmgT = (me.noDmgT || 0) + dt;
       if (playing) this.weapons(me, dt); else me.input.fire = false;
       this.physics(me, dt, playing);
       for (const o of this.cars) {
@@ -1689,12 +1701,12 @@ class Game {
         if (!mine && (nu.spd !== c.ups.spd || nu.arm !== c.ups.arm || nu.dmg !== c.ups.dmg)) { c.ups = nu; const hp = c.hp; c.recalc(); c.hp = hp; }
         if (!mine) c.pts = a[26] || 0;
       }
-      if (c.alive && c.hp < oldHp - 0.5) c.flashT = 0.08;
+      if (c.alive && c.hp < oldHp - 0.5) { c.flashT = 0.08; c.noDmgT = 0; }
       if (c === me) {
         // Die eigene Position bestimmt der Spieler selbst – nur beim Neustart übernimmt er die vom Host
         if (c.alive && (a[24] !== c.life || !wasAlive)) {
           c.x = a[1]; c.y = a[2]; c.a = a[3]; c.turret = a[4]; c.z = a[5]; c.vx = a[6]; c.vy = a[7]; c.vz = a[23];
-          c.life = a[24]; c.sunk = false; c.crashAcc = 0; c.boost = c.st.boost; c.steerS = 0; c.jumpCd = 0;
+          c.life = a[24]; c.sunk = false; c.crashAcc = 0; c.boost = c.st.boost; c.boostEmpty = false; c.steerS = 0; c.jumpCd = 0; c.noDmgT = 0;
           this.camYaw = c.a;
         }
         if (wasAlive && !c.alive) Sound.engineStop();
@@ -1711,7 +1723,7 @@ class Game {
       if (p.alive && !alive) this.breakPropFx(p, null);
       p.alive = alive;
     }
-    this.pickups = s.pk.map(a => ({ x: a[0], y: a[1], z: this.world.terrain(a[0], a[1]), t: a[2], active: !!a[3] }));
+    this.pickups = s.pk.map(a => ({ x: a[0], y: a[1], z: a[4] !== undefined ? a[4] : this.world.terrain(a[0], a[1]), t: a[2], active: !!a[3] }));
     this.mines = s.m.map(a => ({ x: a[0], y: a[1], z: a[4] !== undefined ? a[4] : this.world.terrain(a[0], a[1]), team: a[2], arm: a[3] ? 0 : 1 }));
     if (s.ev) this.applyEvents(s.ev);
     if (this.state === 'over') this.earned = me.earned + (this.endBonus || 0);
@@ -1774,7 +1786,7 @@ class Game {
           if (dd < bestScore) { bestScore = dd; nearestEn = o; }
         }
         if (c.hp < c.st.hp * 0.4) {
-          const hpPick = this.pickups.find(p => p.active && p.t === 0 && d2(c.x, c.y, p.x, p.y) < 130 * 130);
+          const hpPick = this.pickups.find(p => p.active && p.t === 0 && Math.abs((p.z ?? c.z) - c.z) < 4 && d2(c.x, c.y, p.x, p.y) < 130 * 130);
           if (hpPick) goal = hpPick;
         }
         if (!goal && nearestEn) { goal = nearestEn; chase = true; }
@@ -2443,7 +2455,9 @@ class Game {
     };
     const hc = hf > 0.5 ? ['#7dff8a', '#2fa84d'] : hf > 0.25 ? ['#ffe06b', '#d99a14'] : ['#ff8a7a', '#c9261b'];
     if (hf < 0.25 && p.alive) { g.globalAlpha = 0.6 + 0.4 * Math.sin(time * 10); }
-    big(by - 6 * D, 26 * D, hf, hc[0], hc[1], '❤ PANZERUNG', `${Math.ceil(p.alive ? p.hp : 0)} / ${p.st.hp}`);
+    const regenOn = p.alive && (p.noDmgT || 0) >= 30 && p.hp < p.st.hp - 0.5;
+    const hpLbl = regenOn ? (bw < 340 * D ? '❤ +REGEN' : '❤ PANZERUNG · +REGEN') : '❤ PANZERUNG';
+    big(by - 6 * D, 26 * D, hf, hc[0], hc[1], hpLbl, `${Math.ceil(p.alive ? p.hp : 0)} / ${p.st.hp}`);
     g.globalAlpha = 1;
     const nf = clamp(p.boost / p.st.boost, 0, 1);
     big(by + 30 * D, 17 * D, nf, '#8fe3ff', '#1f8fe0', touch ? '🚀 NITRO' : '🚀 NITRO [Shift]', p.boosting ? (p.onGround === false ? 'FLIEGEN!' : 'BOOST!') : Math.round(nf * 100) + ' %');

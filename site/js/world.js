@@ -79,14 +79,15 @@ class World {
     // Zusätzliche befahrbare Tunnel unter den Hügeln (Martinsberg, Kirchberg, Veitsburg)
     // Geländefolgende Profile (Bodenhöhe alle ~30 m): Portale auf Geländehöhe, im Berg ausreichend Überdeckung
     const extraTunnels = [
-      { name: 'Martinsberg-Tunnel', w: 16, hgt: 8.5, p: [135,110,15.8,135,140,15.8,135,170,15.8,135,200,15.8,135,230,15.8,135,260,15.8,135,290,16.2,135,320,16.7,135,350,16.3,135,380,15.9,135,410,15.9,135,440,15.9,135,470,15.9,135,500,15.9] },
-      { name: 'Kirchberg-Tunnel', w: 16, hgt: 8.5, p: [675,230,14,705,230,14.2,735,230,14.5,765,230,14.7,795,230,15,825,230,15.2,855,230,15.5,885,230,15.8,915,230,16,945,230,16.3,975,230,16.5,1005,230,16.8,1035,230,17.1] },
+      { name: 'Martinsberg-Tunnel', w: 16, hgt: 8.5, p: [135,110,15.8,135,140,15.8,135,170,15.8,135,200,15.8,135,230,15.8,135,260,15.8,135,290,16.2,135,320,16.7,135,350,16.3,135,380,15.9,135,410,15.9,135,440,17.0,135,470,18.4] },
+      { name: 'Kirchberg-Tunnel', w: 16, hgt: 8.5, p: [675,230,14.0,705,230,10.2,735,230,7.4,765,230,11.2,795,230,15.0,825,230,15.2,855,230,15.5,885,230,14.6,915,230,13.0,945,230,11.2,975,230,9.4,1005,230,8.0,1027,226,8.2,1054,223,11.1,1078,220,14.2] },
       { name: 'Veitsburg-Tunnel', w: 16, hgt: 8.5, p: [740,1795,0.5,770,1795,0.6,800,1795,0.7,830,1795,3.1,860,1795,5.5,890,1795,7.9,920,1795,7.2,950,1795,4.8,980,1795,2.4,1010,1795,2.2] },
     ];
     const allTunnels = (map.tunnels || []).concat(
       isRW ? extraTunnels.filter(et => !(map.tunnels || []).some(t => t.name === et.name)) : []
     );
     this.hTunFlat = Array.from({ length: nCells }, () => []);
+    this.hTun = Array.from({ length: nCells }, () => []);
     this.tunnels = allTunnels.map(t0 => {
       // Mindestmaße: breit und hoch genug, damit kein Fahrzeug hängen bleibt
       const t = { ...t0, w: Math.max(t0.w, 16), hgt: Math.max(t0.hgt, 8.5) };
@@ -101,6 +102,7 @@ class World {
       const pad = t.w / 2 + 48;
       const tn = { segs, w: t.w, hw: t.w / 2, hgt: t.hgt, name: t.name, p: t.p, totalLen: acc, portals: [], bb: [Math.min(...xs) - t.w, Math.min(...ys) - t.w, Math.max(...xs) + t.w, Math.max(...ys) + t.w], fbb: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad] };
       addHash(this.hTunFlat, tn.fbb, tn);
+      addHash(this.hTun, tn.bb, tn, 3);
       return tn;
     });
     // Portale (Außenrichtung o) – für Geländeeinschnitt, Flügelwände und Portalhallen
@@ -114,6 +116,39 @@ class World {
     }
     this.landmarks = map.landmarks || [];
     this.rails = (map.rails || []).map(r => ({ ax: r.p[0], ay: r.p[1], az: r.p[2], bx: r.p[3], by: r.p[4], bz: r.p[5], w: !!r.w }));
+
+    // Straßen vor Fahrbahn-Glättung, Rampen, Gebäuden und Brücken aufbereiten
+    const extraRoads = isRW ? [
+      // Breite Tunnel-Anschlussstraßen & durchgehende Kreuzungsverbindungen
+      { k: 0, w: 16, p: [135, 110.5, 135, 95, 55, 95, 55, 854] },
+      { k: 1, w: 14, p: [135, 469.5, 135, 540] },
+      { k: 1, w: 14, p: [639.9, 253.5, 640, 232, 675.5, 230] },
+      { k: 1, w: 14, p: [1077.5, 220, 1096, 213, 1086, 165, 1087, 134.6] },
+      { k: 1, w: 14.6, p: [640.1, 1774.3, 668, 1788, 702, 1795, 740.5, 1795] },
+      // Durchgehende West-Flanke (x=55) & Querverbindungen
+      { k: 0, w: 16, p: [55, 893, 55, 1805] },
+      { k: 1, w: 14, p: [55, 520, 135, 520] },
+      { k: 1, w: 14, p: [55, 1795, 117.6, 1789.9] },
+      // Durchgehende Ost-Flanke (x=1255) & Querverbindungen
+      { k: 0, w: 16, p: [1255, 65, 1255, 852] },
+      { k: 0, w: 16, p: [1255, 889, 1255, 1805] },
+      { k: 1, w: 14, p: [1086, 165, 1255, 165] },
+      { k: 1, w: 14, p: [1215, 300, 1255, 300] },
+      { k: 1, w: 14, p: [1050, 1320, 1255, 1320] },
+      { k: 1, w: 14, p: [1009.5, 1795, 1255, 1795] },
+      // Lückenschluss an Stichstraßen & Kreuzungsstümpfen
+      { k: 1, w: 11, p: [1227, 148.3, 1227, 165] },
+      { k: 1, w: 9, p: [1240.3, 108.9, 1255, 108.9] },
+      { k: 1, w: 13.2, p: [255.8, 928, 274.8, 928] },
+      { k: 1, w: 13.2, p: [360.4, 928, 351.9, 954.6] },
+      { k: 1, w: 13.2, p: [383, 744.6, 382.4, 781.6] },
+      { k: 1, w: 11, p: [170, 590, 175.4, 608.5] },
+      { k: 1, w: 11.2, p: [1049.9, 1062.8, 1054, 1094.1] },
+      { k: 1, w: 13, p: [1171.1, 884, 1170, 912] },
+    ] : [];
+    this.roads = map.roads.concat(extraRoads).map(r => ({ ...r, bb: polyBBox(r.p) }));
+    this.hFlat = Array.from({ length: nCells }, () => []);
+    this.buildRoadSmooth(map.decks || []);
 
     // Bodenrampen früh initialisieren, damit Gelände-Glättung vor Gebäuden und Brücken wirkt
     const extraRamps = isRW ? [
@@ -131,18 +166,18 @@ class World {
       { x: 436, y: 224, a: Math.PI / 2, l: 8, w: 6, b: 0 },
       { x: 430, y: 490, a: -Math.PI / 2, l: 8, w: 6, b: 0 },
       { x: 267, y: 316, a: 0, l: 8, w: 6, b: 1 },
-      { x: 636, y: 492, a: -Math.PI / 4, l: 8, w: 6, b: 1 },
+      { x: 685, y: 456, a: 0.22, l: 8, w: 6, b: 1 },
       { x: 135, y: 555, a: -Math.PI / 2, l: 8, w: 6, b: 0 },
       // Schussental & Brücken-Sprungschanzen
       { x: 295, y: 785, a: Math.PI / 2, l: 8, w: 6, b: 1 },
       { x: 292, y: 942, a: -Math.PI / 2, l: 8, w: 6, b: 1 },
-      { x: 590, y: 948, a: Math.PI / 2, l: 8, w: 6, b: 0 },
+      { x: 526, y: 964, a: 1.97, l: 8, w: 6, b: 0 },
       { x: 590, y: 1120, a: -Math.PI / 2, l: 8, w: 6, b: 0 },
       { x: 845, y: 780, a: Math.PI / 2, l: 8, w: 6, b: 1 },
       // Ravensburg: Marienplatz, Altstadt & Veitsburg-Zufahrt
       { x: 578, y: 1480, a: Math.PI / 2, l: 8, w: 6, b: 1 },
       { x: 595, y: 1720, a: -Math.PI / 2, l: 8, w: 6, b: 1 },
-      { x: 410, y: 1610, a: 0, l: 8, w: 6, b: 1 },
+      { x: 456, y: 1644, a: -0.92, l: 8, w: 6, b: 1 },
       { x: 705, y: 1630, a: 0, l: 8, w: 6, b: 1 },
       { x: 700, y: 1795, a: 0, l: 8, w: 6, b: 0 },
       // Neue Flanken-Schanzen auf West- (x=55) und Ost-Flanke (x=1255)
@@ -155,12 +190,11 @@ class World {
     ] : [];
     this.ramps = map.ramps.concat(extraRamps).map(r => ({
       ...r, len: r.l || 7, wid: r.w || 5, big: !!r.b,
-      ca: Math.cos(r.a), sa: Math.sin(r.a), baseZ: this.rawTerrain(r.x, r.y)
+      ca: Math.cos(r.a), sa: Math.sin(r.a), baseZ: r.rz !== undefined ? r.rz : this.terrain(r.x, r.y)
     }));
-    this.hFlat = Array.from({ length: nCells }, () => []);
     for (const r of this.ramps) {
       if (r.rz !== undefined || this.inWater(r.x, r.y)) continue;
-      const pad = Math.max(r.len, r.wid) * 0.6 + 6;
+      const pad = Math.max(r.len, r.wid) * 0.6 + 8.5;
       addHash(this.hFlat, [r.x - pad, r.y - pad, r.x + pad, r.y + pad], r);
     }
 
@@ -168,7 +202,7 @@ class World {
     const inApron = (x, y) => this.portals.some(p => {
       const d = (x - p.x) * p.ox + (y - p.y) * p.oy;
       const lat = Math.abs(-(x - p.x) * p.oy + (y - p.y) * p.ox);
-      return d >= -10 && d <= 26 && lat <= p.hw + 5;
+      return d >= -6 && d <= 26 && lat <= p.hw + 5;
     });
     const inFlankCorridor = (x, y) => {
       if (!isRW) return false;
@@ -297,28 +331,6 @@ class World {
       return { ax, ay, az, bx, by, bz, w: d.w, sky: !!d.sky, acc: !!d.acc, L, ux: (bx - ax) / L, uy: (by - ay) / L, bb: [Math.min(ax, bx) - d.w, Math.min(ay, by) - d.w, Math.max(ax, bx) + d.w, Math.max(ay, by) + d.w] };
     });
 
-    const extraRoads = isRW ? [
-      // Breite Tunnel-Anschlussstraßen
-      { k: 1, w: 14, p: [135, 76, 135, 110.5] },
-      { k: 1, w: 14, p: [135, 499.5, 135, 540] },
-      { k: 1, w: 14, p: [640, 230, 675.5, 230] },
-      { k: 1, w: 14, p: [1034.5, 230, 1068, 230] },
-      { k: 1, w: 14, p: [702, 1795, 740.5, 1795] },
-      // Durchgehende West-Flanke (x=55) & Querverbindungen
-      { k: 0, w: 16, p: [55, 65, 55, 854] },
-      { k: 0, w: 16, p: [55, 893, 55, 1805] },
-      { k: 1, w: 14, p: [55, 95, 135, 95] },
-      { k: 1, w: 14, p: [55, 520, 135, 520] },
-      { k: 1, w: 14, p: [55, 1795, 140, 1795] },
-      // Durchgehende Ost-Flanke (x=1255) & Querverbindungen
-      { k: 0, w: 16, p: [1255, 65, 1255, 852] },
-      { k: 0, w: 16, p: [1255, 889, 1255, 1805] },
-      { k: 1, w: 14, p: [1065, 165, 1255, 165] },
-      { k: 1, w: 14, p: [1215, 300, 1255, 300] },
-      { k: 1, w: 14, p: [1050, 1320, 1255, 1320] },
-      { k: 1, w: 14, p: [1009.5, 1795, 1255, 1795] },
-    ] : [];
-    this.roads = map.roads.concat(extraRoads).map(r => ({ ...r, bb: polyBBox(r.p) }));
     this.areas = map.areas.map(a => ({ ...a, bb: polyBBox(a.p) }));
     this.trees = [];
     for (let i = 0; i < map.trees.length; i += 2) {
@@ -329,6 +341,16 @@ class World {
         if (!d.acc) return false;
         const rx = tx - d.ax, ry = ty - d.ay, t = clampW(rx * d.ux + ry * d.uy, 0, d.L);
         return Math.hypot(rx - d.ux * t, ry - d.uy * t) < d.w * 0.5 + 3.5;
+      })) continue;
+      if (!this.tunnelAt(tx, ty) && this.roads.some(r => {
+        if (r.k > 1 || tx < r.bb[0] - r.w || tx > r.bb[2] + r.w || ty < r.bb[1] - r.w || ty > r.bb[3] + r.w) return false;
+        const hw = r.w * 0.5 + 1.2;
+        for (let k = 0; k + 3 < r.p.length; k += 2) {
+          const ax = r.p[k], ay = r.p[k + 1], dx = r.p[k + 2] - ax, dy = r.p[k + 3] - ay, l2 = dx * dx + dy * dy || 1;
+          const t = clampW(((tx - ax) * dx + (ty - ay) * dy) / l2, 0, 1);
+          if ((tx - ax - dx * t) ** 2 + (ty - ay - dy * t) ** 2 < hw * hw) return true;
+        }
+        return false;
       })) continue;
       const h = hash32(i);
       this.trees.push({ x: tx, y: ty, r: 2.2 + (h % 100) / 60, h: 7 + (h % 5), hue: h % 3 });
@@ -351,13 +373,14 @@ class World {
           let found = false;
           for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
             const nx = r.x + Math.cos(a) * d, ny = r.y + Math.sin(a) * d;
-            if (!this.buildingAt(nx, ny) && !this.inWater(nx, ny)) { r.x = nx; r.y = ny; r.baseZ = this.rawTerrain(nx, ny); found = true; break; }
+            if (!this.buildingAt(nx, ny) && !this.inWater(nx, ny)) { r.x = nx; r.y = ny; r.baseZ = this.terrain(nx, ny); found = true; break; }
           }
           if (found) break;
         }
       }
     }
     this.buildNav();
+    this.pickups = this.buildPickups();
     this.tiles = new Map();
     this.tileZ = 0;
   }
@@ -383,7 +406,6 @@ class World {
       }
     });
     this.hDeck = Array.from({ length: n }, () => []);
-    this.hTun = Array.from({ length: n }, () => []);
     // Leitplanken an Dämmen (kollidieren wie Wände in ihrem Höhenbereich)
     for (const r of this.rails) {
       const e = { ax: r.ax, ay: r.ay, bx: r.bx, by: r.by, isSurface: true, b: { top: Math.max(r.az, r.bz) + (r.w ? 0.9 : 1.1), base: Math.min(r.az, r.bz) - (r.w ? 12 : 2.5), p: null } };
@@ -407,7 +429,6 @@ class World {
       }
     });
     this.tunnels.forEach(t => {
-      add(this.hTun, t.bb, t, 3);
       // Seitenwände im Inneren des Tunnels für sauberes Entlanggleiten
       for (const sg of t.segs) {
         const ux = (sg.bx - sg.ax) / sg.L, uy = (sg.by - sg.ay) / sg.L;
@@ -464,18 +485,151 @@ class World {
     const ix = fx | 0, iy = fy | 0, tx = fx - ix, ty = fy - iy, n = this.tnx, i = iy * n + ix, h = this.hz;
     return h[i] * (1 - tx) * (1 - ty) + h[i + 1] * tx * (1 - ty) + h[i + n] * (1 - tx) * ty + h[i + n + 1] * tx * ty;
   }
-  terrain(x, y) {
+  surfaceBase(x, y) {
     if (!this.hz) return 0;
     let z = this.rawTerrain(x, y);
     // Ost-Flanke (x=1255): Querneigung am Hang zwischen y=920 und y=1240 sanft einebnen
-    if (this.isRW && x > 1235 && x < 1275 && y > 920 && y < 1240) {
+    if (this.isRW && x > 1242 && x < 1268 && y > 920 && y < 1240) {
       const fxR = Math.abs(x - 1255);
-      const wx = fxR <= 8.5 ? 1 : 1 - ssW((fxR - 8.5) / 11.5);
+      const wx = fxR <= 8.0 ? 1 : 1 - ssW((fxR - 8.0) / 5.0);
       const wy = ssW(Math.min((y - 920) / 30, (1240 - y) / 30));
       if (wx * wy > 0) z += (this.rawTerrain(1255, y) - z) * wx * wy;
     }
+    // B30 unter Querspange: Brückendamm nicht in die Unterführung (y=768..808) ragen lassen
+    if (this.isRW && y > 768 && y < 808 && x > 574.5 && x < 606.5) {
+      const xc = 578.8 + (y - 768) * 0.53;
+      const dx = Math.abs(x - xc);
+      if (dx < 14.5) {
+        const wx = dx <= 10.0 ? 1 : 1 - ssW((dx - 10.0) / 4.5);
+        const wy = ssW(Math.min((y - 768) / 7, (808 - y) / 7));
+        const zb = 4.70 - (y - 768) / 40;
+        if (wx * wy > 0) z += (zb - z) * wx * wy;
+      }
+    }
+    return z;
+  }
+  buildRoadSmooth(rawDecks) {
+    const nCells = this.hw * this.hh;
+    this.hRoad = Array.from({ length: nCells }, () => []);
+    if (!this.hz) return;
+    const deckEnds = [];
+    for (const d of rawDecks || []) {
+      if (d.sky || d.acc) continue;
+      deckEnds.push([d.p[0], d.p[1], d.p[2]], [d.p[3], d.p[4], d.p[5]]);
+    }
+    const nearPortal = (x, y) => this.portals.some(p => Math.hypot(x - p.x, y - p.y) < p.hw + 8);
+    const nearDeckEnd = (x, y, z) => deckEnds.some(([dx, dy, dz]) => (x - dx) ** 2 + (y - dy) ** 2 < 49 && Math.abs(z - dz) < 2.5);
+    for (const r of this.roads) {
+      if (r.k > 1 || r.p.length < 4) continue;
+      const pts = [];
+      for (let i = 0; i + 3 < r.p.length; i += 2) {
+        const ax = r.p[i], ay = r.p[i + 1], bx = r.p[i + 2], by = r.p[i + 3];
+        const L = Math.hypot(bx - ax, by - ay);
+        const steps = Math.max(1, Math.round(L / 6));
+        for (let s = 0; s < steps; s++) {
+          const t = s / steps;
+          pts.push({ x: ax + (bx - ax) * t, y: ay + (by - ay) * t });
+        }
+      }
+      pts.push({ x: r.p[r.p.length - 2], y: r.p[r.p.length - 1] });
+      const n = pts.length;
+      const baseZ = new Float64Array(n), smZ = new Float64Array(n), pin = new Uint8Array(n);
+      for (let k = 0; k < n; k++) {
+        const pt = pts[k];
+        const sb = this.surfaceBase(pt.x, pt.y);
+        const tf = this.applyTunFlat(pt.x, pt.y, sb);
+        baseZ[k] = tf;
+        smZ[k] = tf;
+        if (k === 0 || k === n - 1 || this.inWater(pt.x, pt.y) || nearPortal(pt.x, pt.y) || nearDeckEnd(pt.x, pt.y, tf)) pin[k] = 1;
+      }
+      for (let pass = 0; pass < 2; pass++) {
+        const src = Float64Array.from(smZ);
+        for (let k = 1; k < n - 1; k++) {
+          if (pin[k]) continue;
+          const v = clampW(0.25 * src[k - 1] + 0.5 * src[k] + 0.25 * src[k + 1], baseZ[k] - 0.45, baseZ[k] + 0.45);
+          const minT = this.applyTunFlat(pts[k].x, pts[k].y, v);
+          smZ[k] = v < minT ? minT : v;
+        }
+      }
+      const hw = r.w * 0.5, pad = hw + 3.5, prio = r.k === 0 ? 1.5 : 1.0;
+      for (let k = 0; k < n - 1; k++) {
+        const ax = pts[k].x, ay = pts[k].y, az = smZ[k];
+        const bx = pts[k + 1].x, by = pts[k + 1].y, bz = smZ[k + 1];
+        const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+        if (l2 < 1e-4) continue;
+        const sg = { ax, ay, az, bx, by, bz, dx, dy, l2, hw, pad, prio };
+        const x0 = Math.max(0, Math.floor((Math.min(ax, bx) - pad) / HASH)), x1 = Math.min(this.hw - 1, Math.floor((Math.max(ax, bx) + pad) / HASH));
+        const y0 = Math.max(0, Math.floor((Math.min(ay, by) - pad) / HASH)), y1 = Math.min(this.hh - 1, Math.floor((Math.max(ay, by) + pad) / HASH));
+        for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) this.hRoad[cy * this.hw + cx].push(sg);
+      }
+    }
+  }
+  applyTunFlat(x, y, z) {
+    const c = this.cell(x, y);
+    if (c < 0) return z;
+    const tuns = this.hTunFlat[c];
+    if (!tuns || !tuns.length) return z;
+    const seenT = this._seenT || (this._seenT = new Set());
+    seenT.clear();
+    for (const tn of tuns) {
+      if (seenT.has(tn) || x < tn.fbb[0] || x > tn.fbb[2] || y < tn.fbb[1] || y > tn.fbb[3]) continue;
+      seenT.add(tn);
+      for (const p of tn.portals) {
+        const d = (x - p.x) * p.ox + (y - p.y) * p.oy;
+        const lat = Math.abs(-(x - p.x) * p.oy + (y - p.y) * p.ox);
+        if (d >= -5.5 && d <= 28 && lat <= p.hw + 8) {
+          const fd = d <= 6 ? (d >= -1.5 ? 1 : 1 - ssW((-1.5 - d) / 4)) : 1 - ssW((d - 6) / 22);
+          const fl = lat <= p.hw + 2 ? 1 : 1 - ssW((lat - (p.hw + 2)) / 6);
+          z += (p.z - z) * fd * fl;
+        }
+      }
+      let bestD2 = 1e9, bestFloor = 0, bestAcc = 0;
+      for (const sg of tn.segs) {
+        if (x < sg.bb[0] || x > sg.bb[2] || y < sg.bb[1] || y > sg.bb[3]) continue;
+        const dx = sg.bx - sg.ax, dy = sg.by - sg.ay;
+        const t = clampW(((x - sg.ax) * dx + (y - sg.ay) * dy) / (sg.L * sg.L), 0, 1);
+        const px = sg.ax + dx * t, py = sg.ay + dy * t;
+        const dd2 = (x - px) ** 2 + (y - py) ** 2;
+        if (dd2 < bestD2) { bestD2 = dd2; bestFloor = sg.az + (sg.bz - sg.az) * t; bestAcc = sg.acc0 + t * sg.L; }
+      }
+      const lat = Math.sqrt(bestD2);
+      if (lat <= tn.hw + 6.5) {
+        const dIn = Math.min(bestAcc, tn.totalLen - bestAcc);
+        if (dIn > 6.0) {
+          const fa = ssW((dIn - 6.0) / 4.5);
+          const fl = lat <= tn.hw + 1.5 ? 1 : 1 - ssW((lat - (tn.hw + 1.5)) / 5.0);
+          const need = bestFloor + tn.hgt + 1.3;
+          if (need > z) z += (need - z) * fa * fl;
+        }
+      }
+    }
+    return z;
+  }
+  terrain(x, y) {
+    if (!this.hz) return 0;
+    const baseZ = this.surfaceBase(x, y);
+    let z = baseZ;
     const c = this.cell(x, y);
     if (c >= 0) {
+      // Fahrbahnen über die Straßenbreite nivellieren (minimale Querneigung, glattes Längsprofil)
+      const rds = this.hRoad && this.hRoad[c];
+      if (rds && rds.length && !this.inWater(x, y) && !this.isPortalHole(x, y)) {
+        let sumZ = 0, sumW = 0, maxW = 0;
+        for (let i = 0; i < rds.length; i++) {
+          const sg = rds[i];
+          const t = clampW(((x - sg.ax) * sg.dx + (y - sg.ay) * sg.dy) / sg.l2, 0, 1);
+          const dist = Math.hypot(x - sg.ax - sg.dx * t, y - sg.ay - sg.dy * t);
+          if (dist >= sg.pad) continue;
+          const segZ = sg.az + (sg.bz - sg.az) * t;
+          if (Math.abs(segZ - baseZ) > 3.5) continue;
+          const core = sg.hw * 0.95;
+          const f = dist <= core ? 1 : 1 - ssW((dist - core) / (sg.pad - core));
+          const w = f * sg.prio;
+          sumZ += segZ * w; sumW += w;
+          if (f > maxW) maxW = f;
+        }
+        if (sumW > 0 && maxW > 0) z += (sumZ / sumW - z) * maxW;
+      }
       // Rampen-Untergrund sanft auf Rampen-Basishöhe angleichen (kein Hängenbleiben an Kanten)
       const flats = this.hFlat[c];
       if (flats && flats.length && !this.inWater(x, y)) {
@@ -483,55 +637,17 @@ class World {
         for (const r of flats) {
           const dx = x - r.x, dy = y - r.y;
           const u = dx * r.ca + dy * r.sa, v = -dx * r.sa + dy * r.ca;
-          const hu = r.len * 0.5 + 1.0, hv = r.wid * 0.5 + 0.8;
+          const hu = r.len * 0.5 + 1.5, hv = r.wid * 0.5 + 1.2;
           const du = Math.max(0, Math.abs(u) - hu), dv = Math.max(0, Math.abs(v) - hv);
           const d = Math.hypot(du, dv);
-          if (d >= 5) continue;
-          const w = 1 - ssW(d / 5);
+          if (d >= 7.5) continue;
+          const w = 1 - ssW(d / 7.5);
           if (w > bestW) { bestW = w; bestZ = r.baseZ; }
         }
         if (bestW > 0) z += (bestZ - z) * bestW;
       }
-      // Tunnel-Zufahrten ausheben & saubere Geländedecke über der Röhre garantieren
-      const tuns = this.hTunFlat[c];
-      if (tuns && tuns.length) {
-        const seenT = this._seenT || (this._seenT = new Set());
-        seenT.clear();
-        for (const tn of tuns) {
-          if (seenT.has(tn) || x < tn.fbb[0] || x > tn.fbb[2] || y < tn.fbb[1] || y > tn.fbb[3]) continue;
-          seenT.add(tn);
-          for (const p of tn.portals) {
-            const d = (x - p.x) * p.ox + (y - p.y) * p.oy;
-            const lat = Math.abs(-(x - p.x) * p.oy + (y - p.y) * p.ox);
-            if (d >= -7.5 && d <= 48 && lat <= p.hw + 22) {
-              const fd = d <= 14 ? (d >= -2.5 ? 1 : 1 - ssW((-2.5 - d) / 5)) : 1 - ssW((d - 14) / 34);
-              const fl = lat <= p.hw + 3 ? 1 : 1 - ssW((lat - (p.hw + 3)) / 19);
-              z += (p.z - z) * fd * fl;
-            }
-          }
-          let bestD2 = 1e9, bestFloor = 0, bestAcc = 0;
-          for (const sg of tn.segs) {
-            if (x < sg.bb[0] || x > sg.bb[2] || y < sg.bb[1] || y > sg.bb[3]) continue;
-            const dx = sg.bx - sg.ax, dy = sg.by - sg.ay;
-            const t = clampW(((x - sg.ax) * dx + (y - sg.ay) * dy) / (sg.L * sg.L), 0, 1);
-            const px = sg.ax + dx * t, py = sg.ay + dy * t;
-            const dd2 = (x - px) ** 2 + (y - py) ** 2;
-            if (dd2 < bestD2) { bestD2 = dd2; bestFloor = sg.az + (sg.bz - sg.az) * t; bestAcc = sg.acc0 + t * sg.L; }
-          }
-          const lat = Math.sqrt(bestD2);
-          if (lat <= tn.hw + 22) {
-            const dIn = Math.min(bestAcc, tn.totalLen - bestAcc);
-            if (dIn > 4.0) {
-              const fa = ssW((dIn - 4.0) / 3.5);
-              const fl = lat <= tn.hw + 2 ? 1 : 1 - ssW((lat - (tn.hw + 2)) / 20);
-              const need = bestFloor + tn.hgt + 1.3;
-              if (need > z) z += (need - z) * fa * fl;
-            }
-          }
-        }
-      }
     }
-    return z;
+    return this.applyTunFlat(x, y, z);
   }
   // Brückenplatten, die diesen Punkt überdecken: Höhe der Oberseite
   decksAt(x, y, out) {
@@ -1088,6 +1204,139 @@ class World {
     for (const t of this.tunnels) { g.strokeStyle = '#8a8f96'; g.setLineDash([6, 4]); g.lineWidth = t.w * 0.7; g.beginPath(); for (let i = 0; i < t.p.length; i += 3) (i ? g.lineTo : g.moveTo).call(g, t.p[i], t.p[i + 1]); g.stroke(); g.setLineDash([]); }
     for (const b of this.buildings) { g.fillStyle = b.lm ? '#7b6a55' : '#45474d'; path(b.p, true); g.fill(); }
     return c;
+  }
+  buildPickups() {
+    const out = [];
+    const farEnough = (x, y, z, minD) => {
+      const m2 = minD * minD;
+      for (let i = 0; i < out.length; i++) {
+        const o = out[i];
+        if (Math.abs(o.z - z) < 5 && (o.x - x) ** 2 + (o.y - y) ** 2 < m2) return false;
+      }
+      return true;
+    };
+    const clearGround = (x, y) => {
+      if (x < 18 || y < 18 || x > this.w - 18 || y > this.h - 18) return false;
+      if (this.isPortalHole(x, y) || this.inWater(x, y) || this.buildingAt(x, y)) return false;
+      if (this.buildingAt(x + 1.8, y) || this.buildingAt(x - 1.8, y) || this.buildingAt(x, y + 1.8) || this.buildingAt(x, y - 1.8)) return false;
+      if (this.inWater(x + 2, y) || this.inWater(x - 2, y) || this.inWater(x, y + 2) || this.inWater(x, y - 2)) return false;
+      if ((this.bases || []).some(bs => (x - bs.x) ** 2 + (y - bs.y) ** 2 < 100)) return false;
+      if ((this.map.crates || []).some(cr => (x - cr.x) ** 2 + (y - cr.y) ** 2 < 9)) return false;
+      return true;
+    };
+    const add = (x, y, z, t, minD) => {
+      if (!farEnough(x, y, z, minD)) return false;
+      out.push({ x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, z: Math.round(z * 100) / 100, t, active: true, t2: 0 });
+      return true;
+    };
+
+    // 1. Bestehende Karten-Pickups erhalten (falls frei auf Boden oder im Tunnel)
+    for (const p of (this.map.pickups || [])) {
+      const tn = this.tunnelAt(p.x, p.y);
+      const z = tn && this.isPortalHole(p.x, p.y) ? tn.floor : this.terrain(p.x, p.y);
+      if (this.inWater(p.x, p.y) || (!tn && this.buildingAt(p.x, p.y))) continue;
+      add(p.x, p.y, z, p.t, 12);
+    }
+
+    // 2. Alle Tunnel ausstatten (Nitro - Medkit - Nitro entlang jeder Röhre)
+    for (const tn of this.tunnels) {
+      const specs = [[0.24, 1], [0.50, 0], [0.76, 1]];
+      for (const [frac, t] of specs) {
+        const target = tn.totalLen * frac;
+        for (const sg of tn.segs) {
+          if (target < sg.acc0 - 1e-3 || target > sg.acc0 + sg.L + 1e-3) continue;
+          const lt = clampW((target - sg.acc0) / (sg.L || 1), 0, 1);
+          const x = sg.ax + (sg.bx - sg.ax) * lt, y = sg.ay + (sg.by - sg.ay) * lt;
+          const z = sg.az + (sg.bz - sg.az) * lt;
+          add(x, y, z, t, 28);
+          break;
+        }
+      }
+    }
+
+    // 3. Begehbare Flachdächer (SkyRoof-Netzwerke) mit Medkits und Nitro versorgen
+    let skyIdx = 0;
+    for (const b of this.buildings) {
+      if (!b.isSkyRoof || !pointInPoly(b.p, b.cx, b.cy)) continue;
+      const t = (skyIdx++) % 2;
+      const nearSameZDeck = (x, y) => this.decks.some(d => {
+        if (Math.abs(d.az - b.top) > 1.8 && Math.abs(d.bz - b.top) > 1.8) return false;
+        const rx = x - d.ax, ry = y - d.ay, u = clampW(rx * d.ux + ry * d.uy, 0, d.L);
+        return Math.hypot(rx - d.ux * u, ry - d.uy * u) < d.w * 0.5 + 1.5;
+      });
+      const nearRoofRamp = (x, y) => this.ramps.some(r => r.rz !== undefined && Math.abs(r.rz - b.top) < 2 && Math.hypot(x - r.x, y - r.y) < 5);
+      let px = b.cx, py = b.cy;
+      if (nearSameZDeck(px, py) || nearRoofRamp(px, py)) {
+        let found = false;
+        for (let rad = 4; rad <= 12 && !found; rad += 3) {
+          for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+            const cx = b.cx + Math.cos(a) * rad, cy = b.cy + Math.sin(a) * rad;
+            if (pointInPoly(b.p, cx, cy) && pointInPoly(b.p, cx + 1.5, cy) && pointInPoly(b.p, cx - 1.5, cy)
+              && pointInPoly(b.p, cx, cy + 1.5) && pointInPoly(b.p, cx, cy - 1.5)
+              && !nearSameZDeck(cx, cy) && !nearRoofRamp(cx, cy)) {
+              px = cx; py = cy; found = true; break;
+            }
+          }
+        }
+      }
+      add(px, py, b.top, t, 14);
+    }
+
+    // 4. Große gepflasterte Plätze (Marienplatz, Märkte, etc.)
+    let plazaIdx = 0;
+    for (const a of this.areas) {
+      if (a.t !== 'paved') continue;
+      const p = a.p, n = p.length / 2;
+      let area = 0, cx = 0, cy = 0;
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const x0 = p[i * 2], y0 = p[i * 2 + 1], x1 = p[j * 2], y1 = p[j * 2 + 1];
+        const cr = x0 * y1 - x1 * y0;
+        area += cr; cx += (x0 + x1) * cr; cy += (y0 + y1) * cr;
+      }
+      area *= 0.5;
+      if (Math.abs(area) < 1200) continue;
+      cx /= 6 * area; cy /= 6 * area;
+      let px = cx, py = cy, ok = pointInPoly(p, px, py) && clearGround(px, py);
+      if (!ok) {
+        for (let rad = 5; rad <= 25 && !ok; rad += 5) {
+          for (let ang = 0; ang < Math.PI * 2; ang += Math.PI / 4) {
+            const tx = cx + Math.cos(ang) * rad, ty = cy + Math.sin(ang) * rad;
+            if (pointInPoly(p, tx, ty) && clearGround(tx, ty)) { px = tx; py = ty; ok = true; break; }
+          }
+        }
+      }
+      if (ok) add(px, py, this.terrain(px, py), (plazaIdx++) % 2, 42);
+    }
+
+    // 5. Hauptstraßen (k=0) und wichtige Verbindungs-/Flankenstraßen (k=1) abwechselnd mit Medkit & Nitro
+    let mainIdx = 0;
+    for (const kTarget of [0, 1]) {
+      const step = kTarget === 0 ? 68 : 92;
+      const minD = kTarget === 0 ? 48 : 58;
+      for (const r of this.roads) {
+        if (r.k !== kTarget || r.p.length < 4) continue;
+        let pos = step * 0.5;
+        for (let i = 0; i + 3 < r.p.length; i += 2) {
+          const ax = r.p[i], ay = r.p[i + 1], bx = r.p[i + 2], by = r.p[i + 3];
+          const L = Math.hypot(bx - ax, by - ay);
+          if (L <= 0) continue;
+          while (pos <= L) {
+            const t = pos / L;
+            const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
+            if (clearGround(px, py) && !this.ramps.some(rp => rp.rz === undefined && Math.hypot(px - rp.x, py - rp.y) < 9)) {
+              const pz = this.terrain(px, py);
+              const ds = this.decksAt(px, py, this._dkp || (this._dkp = []));
+              const underDeck = ds.some(dz => dz > pz + 0.5 && dz - DECK_T < pz + 2.5);
+              if (!underDeck) add(px, py, pz, (mainIdx++) % 2, minD);
+            }
+            pos += step;
+          }
+          pos -= L;
+        }
+      }
+    }
+    return out;
   }
 }
 

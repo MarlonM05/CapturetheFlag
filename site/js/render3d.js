@@ -692,15 +692,15 @@ class Renderer3D {
         const ax = flat0[(i - 1) * 2], ay = flat0[(i - 1) * 2 + 1];
         const cx = flat0[(i + 1) * 2], cy = flat0[(i + 1) * 2 + 1];
         const l1 = Math.hypot(bx - ax, by - ay), l2 = Math.hypot(cx - bx, cy - by);
-        if (l1 > 4 && l2 > 4) {
+        if (l1 > 2.5 && l2 > 2.5) {
           const d1x = (bx - ax) / l1, d1y = (by - ay) / l1, d2x = (cx - bx) / l2, d2y = (cy - by) / l2;
           const dot = d1x * d2x + d1y * d2y;
-          if (dot < 0.94) {
-            const cut = Math.min(l1 * 0.32, l2 * 0.32, Math.max(3.5, w * 0.55));
+          if (dot < 0.985) {
+            const cut = Math.min(l1 * 0.38, l2 * 0.38, Math.max(5.5, w * 0.78));
             const p0x = bx - d1x * cut, p0y = by - d1y * cut;
             const p2x = bx + d2x * cut, p2y = by + d2y * cut;
-            for (let s = 0; s <= 4; s++) {
-              const t = s / 4, it = 1 - t;
+            for (let s = 0; s <= 8; s++) {
+              const t = s / 8, it = 1 - t;
               smoothed.push(it * it * p0x + 2 * it * t * bx + t * t * p2x, it * it * p0y + 2 * it * t * by + t * t * p2y);
             }
             continue;
@@ -808,7 +808,7 @@ class Renderer3D {
       // An Straßenenden / Kreuzungspunkten runde Asphaltteller einfügen
       for (const idx of [0, r.p.length - 2]) {
         const jx = r.p[idx], jy = r.p[idx + 1];
-        if (inOtherRoad(jx, jy, r, 1.2)) addJunctionDisc(jx, jy, r.w * 0.52);
+        if (inOtherRoad(jx, jy, r, 1.2)) addJunctionDisc(jx, jy, r.w * 0.54);
       }
       // Laternen
       let acc = 12, side = 1;
