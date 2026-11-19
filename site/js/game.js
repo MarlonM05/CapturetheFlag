@@ -418,14 +418,64 @@ class Game {
   frame(now) {
     if (!this.running) return;
     let dt = Math.min(Math.max(0, (now - this.last) / 1000), 0.05); this.last = now;
+    const step = 1 / 60;
     if (!this.paused) {
       this.acc = Math.min(this.acc + dt, 0.05);
-      const step = 1 / 60;
       let n = 0;
-      while (this.acc >= step && n < 4) { this.update(step); this.acc -= step; n++; }
+      while (this.acc >= step && n < 4) { this.snapPrev(); this.update(step); this.acc -= step; n++; }
     }
+    // Physik läuft fest mit 60 Hz, der Bildschirm oft mit 75/120/144 Hz: zwischen den letzten beiden
+    // Physikschritten interpolieren, damit Autos, Geschosse und Kamera gleichmäßig statt ruckartig laufen
+    const lerped = this.lerpBegin(this.paused ? 1 : clamp(this.acc / step, 0, 1));
     this.render(dt);
+    this.lerpEnd(lerped);
     requestAnimationFrame(this.frame);
+  }
+  // Zustand vor einem Physikschritt merken
+  snapPrev() {
+    for (const c of this.cars) {
+      const p = c._p || (c._p = {});
+      p.x = c.x; p.y = c.y; p.z = c.z; p.a = c.a; p.t = c.turret; p.pi = c.pitch || 0; p.ro = c.roll || 0; p.alive = c.alive; p.ok = true;
+    }
+    for (const b of this.bullets) { b._px = b.x; b._py = b.y; b._pz = b.z; }
+    const v = this._pv || (this._pv = {});
+    v.yaw = this.camYaw; v.view = this.viewYaw; v.lp = this.lookPitch || 0; v.cx = this.cam.x; v.cy = this.cam.y; v.ok = true;
+  }
+  // für das Zeichnen kurz auf den Zwischenstand setzen (danach wieder zurück)
+  lerpBegin(al) {
+    if (al >= 0.999) return null;
+    const L = (a, b) => a + (b - a) * al, LA = (a, b) => a + angNorm(b - a) * al;
+    const saved = [];
+    for (const c of this.cars) {
+      const p = c._p;
+      if (!p || !p.ok || p.alive !== c.alive || (c.x - p.x) ** 2 + (c.y - p.y) ** 2 > 400) continue;   // Teleport/Respawn nicht verschmieren
+      saved.push(c, c.x, c.y, c.z, c.a, c.turret, c.pitch, c.roll);
+      c.x = L(p.x, c.x); c.y = L(p.y, c.y); c.z = L(p.z, c.z); c.a = LA(p.a, c.a); c.turret = LA(p.t, c.turret);
+      if (c.pitch !== undefined) c.pitch = p.pi + (c.pitch - p.pi) * al;
+      if (c.roll !== undefined) c.roll = LA(p.ro, c.roll);
+    }
+    const bs = [];
+    for (const b of this.bullets) {
+      if (b._px === undefined) continue;
+      bs.push(b, b.x, b.y, b.z);
+      b.x = L(b._px, b.x); b.y = L(b._py, b.y); b.z = L(b._pz, b.z);
+    }
+    const v = this._pv, cam = v && v.ok ? [this.camYaw, this.viewYaw, this.lookPitch, this.cam.x, this.cam.y] : null;
+    if (cam) {
+      this.camYaw = LA(v.yaw, this.camYaw);
+      if (v.view !== undefined && this.viewYaw !== undefined) this.viewYaw = LA(v.view, this.viewYaw);
+      if (this.lookPitch !== undefined) this.lookPitch = L(v.lp, this.lookPitch);
+      if ((this.cam.x - v.cx) ** 2 + (this.cam.y - v.cy) ** 2 < 400) { this.cam.x = L(v.cx, this.cam.x); this.cam.y = L(v.cy, this.cam.y); }
+    }
+    return { saved, bs, cam };
+  }
+  lerpEnd(st) {
+    if (!st) return;
+    const S = st.saved;
+    for (let i = 0; i < S.length; i += 8) { const c = S[i]; c.x = S[i + 1]; c.y = S[i + 2]; c.z = S[i + 3]; c.a = S[i + 4]; c.turret = S[i + 5]; c.pitch = S[i + 6]; c.roll = S[i + 7]; }
+    const B = st.bs;
+    for (let i = 0; i < B.length; i += 4) { const b = B[i]; b.x = B[i + 1]; b.y = B[i + 2]; b.z = B[i + 3]; }
+    if (st.cam) { [this.camYaw, this.viewYaw, this.lookPitch, this.cam.x, this.cam.y] = st.cam; }
   }
 
   say(text, color = '#fff', dur = 2, big = true) {
