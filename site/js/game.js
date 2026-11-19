@@ -817,7 +817,7 @@ class Game {
     let vF = c.vx * fx + c.vy * fy, vL = -c.vx * fy + c.vy * fx;
     // Turbo (in der Luft schnellerer Verbrauch gegen unendliches Fliegen)
     c.boosting = playing && inp.boost && c.boost > 0.02 && (thr >= 0 || !onGround);
-    if (c.boosting) { c.boost = Math.max(0, c.boost - dt * (onGround ? 1.0 : 1.85)); }
+    if (c.boosting) { c.boost = Math.max(0, c.boost - dt * (onGround ? 0.85 : 1.2)); }
     else {
       // Nitro lädt schneller beim Driften, in der Luft nur minimal
       const bonus = (c.drifting && Math.hypot(c.vx, c.vy) > 8 ? 0.7 : 0) + (!onGround ? 0.08 : 0);
@@ -891,26 +891,34 @@ class Game {
         Sound.play('jump', this.vol(c.x, c.y));
         for (let i = 0; i < 8; i++) this.particles.add({ x: c.x, y: c.y, zAbs: c.z + 0.3, vz: -3, vx: rand(-5, 5), vy: rand(-5, 5), life: 0.4, max: 0.4, size: 0.6, grow: 2, color: '#bfe8ff', alpha: 0.6, add: true });
       }
-      // Kontrollierte Luftrotation mit Rotationsdämpfung (kein unkontrolliertes Weiterdrehen)
+      // Luftlage (Rocket-League-Stil): S neigt die Nase nach oben, W nach unten. Nitro schiebt strikt entlang der Nase –
+      // Höhe gewinnt nur, wer die Nase aktiv zum Himmel richtet (kein automatisches Schweben).
       const hgt = c.z - c.groundZ, nearGround = hgt < 4.5 && c.vz < 0;
       const up = Math.round((c.pitch || 0) / (Math.PI * 2)) * Math.PI * 2;
       let wantV;
-      const pt = c.bot ? 0 : thr;   // Bots fliegen gerade
+      const pt = c.bot ? 0 : thr;
       c.pitchV = (c.pitchV || 0) * Math.exp(-dt * 4.5);
       if (c.dodgeT > 0) {
         c.dodgeT -= dt;
         wantV = c.dodgeDir ? -c.dodgeDir * 11.4 : clamp((up - (c.pitch || 0)) * 6, -5.0, 5.0);
         if (c.dodgeRollDir) c.roll = (c.roll || 0) + c.dodgeRollDir * 11.6 * dt;
         if (c.dodgeT <= 0) { c.pitch = angNorm(c.pitch || 0); c.roll = angNorm(c.roll || 0); c.pitchV = 0; c.rollV = 0; c.flipAcc = 0; c.dodgeRollDir = 0; }
-      } else if (c.boosting && pt !== 0 && !nearGround && hgt > 3.5) {
-        wantV = -pt * 4.5;
+      } else if (pt !== 0 && !nearGround) {
+        wantV = -pt * 4.0;   // gezieltes Nicken: S = Nase hoch, W = Nase runter
+      } else if (c.boosting && !nearGround) {
+        wantV = c.bot ? clamp((up + (c.botOverWater ? 0.8 : 0.3) - (c.pitch || 0)) * 4, -2, 2) : 0;   // Lage halten, solange geboostet wird (Bots gleiten leicht nach oben, über Wasser steiler)
       } else {
-        const tgt = nearGround ? up : up - pt * 0.24;
-        wantV = clamp((tgt - (c.pitch || 0)) * (nearGround ? 9.0 : 5.5), -5.2, 5.2);
+        wantV = clamp((up - (c.pitch || 0)) * (nearGround ? 9.0 : 4.0), -5.2, 5.2);   // sanft waagerecht ausrichten
       }
-      c.pitchV = c.dodgeT > 0 && c.dodgeDir ? wantV : c.pitchV + (wantV - c.pitchV) * Math.min(1, dt * 7.5);
+      c.pitchV = c.dodgeT > 0 && c.dodgeDir ? wantV : c.pitchV + (wantV - c.pitchV) * Math.min(1, dt * 10);
       c.pitch = (c.pitch || 0) + c.pitchV * dt;
       c.flipAcc = (c.flipAcc || 0) + c.pitchV * dt;
+      if (!(c.dodgeT > 0)) {   // ohne Ausweichsprung gibt es keinen Überschlag: Neigung begrenzen
+        const lo = up - 1.25, hi = up + 1.45;
+        if (c.pitch > hi) { c.pitch = hi; if (c.pitchV > 0) c.pitchV = 0; }
+        else if (c.pitch < lo) { c.pitch = lo; if (c.pitchV < 0) c.pitchV = 0; }
+        c.flipAcc *= Math.exp(-dt * 6);
+      }
       // Seitenneigung (Air-Roll) mit starker Rotationsdämpfung und automatischer Stabilisierung vor der Landung
       if (!(c.dodgeT > 0 && c.dodgeRollDir)) {
         const wantRoll = nearGround ? 0 : clamp(-steer * (c.boosting ? 0.34 : 0.22) - (inp.drift ? steer * 0.28 : 0), -0.52, 0.52);
@@ -921,15 +929,13 @@ class Game {
       c.a += steer * st.turn * (c.boosting ? 0.58 : 0.36) * dt;
       c.lastSkid = null;
       if (c.boosting) {
-        // Nitro in der Luft: kontrollierter Gleit-Schub über Lücken/Dächer, aber kein unendliches Steigen
-        vF = Math.min(vF + st.accel * 1.05 * dt, st.speed * 1.38);
-        const flyH = Math.max(0, c.z - (c.smoothGroundZ ?? c.groundZ));
-        const liftFactor = clamp(0.76 - Math.max(0, flyH - 5.0) * 0.09, 0.10, 0.76);
-        c.vz += GRAV * liftFactor * dt;
-        if (c.vz < -9.5) c.vz += 11 * dt;
-        const maxClimb = clamp((9.5 - flyH) * 0.42, -3.0, 4.2);
-        if (c.vz > maxClimb) c.vz += (maxClimb - c.vz) * Math.min(1, dt * 6);
-        if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6, y: c.y - fy * c.def.len * 0.6, zAbs: c.z + 0.6, vz: -2, vx: -fx * 12 + rand(-2, 2), vy: -fy * 12 + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
+        // Nitro-Schub strikt entlang der Fahrzeugnase: waagerecht bei flacher Nase, Steigen nur mit nach oben gerichteter Nase.
+        // Kein Anti-Gravitations-Auftrieb – erst ab ca. 40° Neigung nach oben überwindet der Schub die Schwerkraft.
+        const pc = clamp(c.pitch || 0, -1.45, 1.45), cpc = Math.cos(pc), spc = Math.sin(pc);
+        const thrust = GRAV * (1.68 + st.accel * 0.005);
+        if (vF < st.speed * 1.5) vF = Math.min(vF + thrust * cpc * dt, st.speed * 1.5);
+        c.vz = Math.min(c.vz + thrust * spc * dt, 26);
+        if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6 * cpc, y: c.y - fy * c.def.len * 0.6 * cpc, zAbs: c.z + 0.6 - spc * c.def.len * 0.5, vz: -spc * 12 - 1, vx: -fx * 12 * cpc + rand(-2, 2), vy: -fy * 12 * cpc + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
       }
     }
     c.vx = fx * vF - fy * vL; c.vy = fy * vF + fx * vL;
@@ -961,7 +967,7 @@ class Game {
     // Schwerkraft: am Boden folgt das Auto der Oberfläche, in der Luft verstärkter Abwärtszug gegen Endlos-Flug
     if (c.onGround) c.vz = surfVz;
     else {
-      const airGrav = GRAV * (c.boosting ? 1.12 : 1.22);
+      const airGrav = GRAV * 1.15;   // kein Schweben: Nitro muss gegen die volle Schwerkraft anschieben
       c.vz = Math.max(-30, c.vz - airGrav * dt);
     }
     c.z += c.vz * dt;
@@ -975,12 +981,14 @@ class Game {
     for (let s = 0; s < steps; s++) {
       const ox = c.x, oy = c.y;
       const mx = c.vx * dt / steps, my = c.vy * dt / steps, ml = Math.hypot(mx, my);
+      const carTun = W.tunnelAt(ox, oy);
+      const inCarTun = !!(carTun && c.z < carTun.ceil - 0.45);
       // Gelände/Brücken: steile Hänge und Plattenkanten sind Wände
       const rr = c.def.radius * 0.85, ux = ml > 1e-4 ? mx / ml : 0, uy = ml > 1e-4 ? my / ml : 0;
       const stepH = 0.22 + 1.05 * ml, stepF = 0.22 + 1.05 * (ml + rr);
       // am Boden fährt man nicht ins Wasser (Ufer wie ein Bordstein) – nur ein zu kurzer Sprung endet im Fluss
       const wet = (x, y) => { if (c.z - c.groundZ > 0.8 || c.groundKind !== 'terrain') return false; const wz2 = W.waterAt(x, y); return wz2 !== null && wz2 > c.z - 3; };
-      const bl = (x, y) => W.blockedAt(x, y, c.z, stepH) || wet(x, y) || (ml > 1e-4 && (W.blockedAt(x + ux * rr, y + uy * rr, c.z, stepF) || wet(x + ux * rr, y + uy * rr)));
+      const bl = (x, y) => W.blockedAt(x, y, c.z, stepH, inCarTun) || wet(x, y) || (ml > 1e-4 && (W.blockedAt(x + ux * rr, y + uy * rr, c.z, stepF, inCarTun) || wet(x + ux * rr, y + uy * rr)));
       if (!bl(ox + mx, oy + my)) { c.x = ox + mx; c.y = oy + my; }
       else {
         const imp = Math.hypot(c.vx, c.vy);
@@ -1242,6 +1250,7 @@ class Game {
       const b = this.bullets[i];
       let dead = false;
       b.life -= dt;
+      const oz0 = b.z;
       // Raketen: Zielsuche + Beschleunigung
       if (b.w.homing) {
         const sp = Math.hypot(b.vx, b.vy);
@@ -1306,14 +1315,21 @@ class Game {
           dead = true; break;
         }
       }
-      // Gebäude
-      if (!dead && W.solidAt(b.x, b.y, b.z)) {
-        if (b.w.splash) { b.x = ox; b.y = oy; this.explode(b); }
-        else {
-          for (let k = 0; k < 3; k++) this.particles.add({ type: 'spark', x: ox, y: oy, vx: -b.vx * 0.08 + rand(-5, 5), vy: -b.vy * 0.08 + rand(-5, 5), life: 0.18, max: 0.18, size: 0.12, color: '#ffe8a0', add: true });
-          this.particles.add({ x: ox, y: oy, vx: 0, vy: 0, life: 0.4, max: 0.4, size: 0.3, grow: 1.5, color: '#bbb', alpha: 0.4 });
+      // Gebäude (Geschosse sind schnell: Weg in kurzen Schritten prüfen, damit nichts durch dünne Wände fliegt)
+      if (!dead) {
+        const sdx = b.x - ox, sdy = b.y - oy, sdz = b.z - oz0, n = Math.max(1, Math.ceil(Math.hypot(sdx, sdy) / 1.4));
+        let hitK = 0;
+        for (let k = 1; k <= n; k++) { const tt = k / n; if (W.solidAt(ox + sdx * tt, oy + sdy * tt, oz0 + sdz * tt)) { hitK = k; break; } }
+        if (hitK) {
+          const back = (hitK - 1) / n;
+          b.x = ox + sdx * back; b.y = oy + sdy * back; b.z = oz0 + sdz * back;
+          if (b.w.splash) this.explode(b);
+          else {
+            for (let k = 0; k < 3; k++) this.particles.add({ type: 'spark', x: b.x, y: b.y, vx: -b.vx * 0.08 + rand(-5, 5), vy: -b.vy * 0.08 + rand(-5, 5), life: 0.18, max: 0.18, size: 0.12, color: '#ffe8a0', add: true });
+            this.particles.add({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.4, max: 0.4, size: 0.3, grow: 1.5, color: '#bbb', alpha: 0.4 });
+          }
+          dead = true;
         }
-        dead = true;
       }
       if (!dead && b.life <= 0) { if (b.w.splash) this.explode(b); dead = true; }
       if (dead) { this.bullets[i] = this.bullets[this.bullets.length - 1]; this.bullets.pop(); }
@@ -1360,6 +1376,8 @@ class Game {
   damage(c, amt, by, kind) {
     if (this.isClient) return;
     if (!c.alive || c.protect > 0 || amt <= 0 || this.state === 'over') return;
+    // Panzerbrechung: Treffer gegen schwere Fahrzeuge (hohe Masse, z. B. Panzer/Bock) richten Zusatzschaden an
+    if ((kind === 'shot' || kind === 'boom') && by && by.w && by.w.ap) amt *= 1 + by.w.ap * clamp((c.def.mass - 1.1) / 1.5, 0, 1);
     if (c.flag >= 0) amt *= 0.7;   // Flaggenträger halten etwas mehr aus (große Karte)
     c.hp -= amt; c.flashT = 0.08;
     if (by && by !== c) { c.hitBy.set(by, performance.now()); c.lastAttacker = by; c.lastAttackT = performance.now(); }
@@ -1812,8 +1830,8 @@ class Game {
         B.wp = B.field ? W.waypoint(B.field, c.x, c.y, 10) : { x: gx, y: gy, dist: dGoal };
         if (!B.wp) B.wp = { x: gx, y: gy, dist: dGoal };
       }
-      // Ziel für Waffe (mit fairer Zielerfassungs-Verzögerung bei neuem Gegner)
-      const nextTarget = this.findTarget(c, c.range * 0.96);
+      // Ziel für Waffe (mit fairer Zielerfassungs-Verzögerung und begrenzter Bot-Sichtweite trotz längerer Spieler-Reichweiten)
+      const nextTarget = this.findTarget(c, Math.min(c.range * 0.96, 110));
       if (nextTarget !== B.target) {
         if (nextTarget) {
           const toAng = Math.atan2(nextTarget.y - c.y, nextTarget.x - c.x);
@@ -1852,7 +1870,8 @@ class Game {
     // Zurückhaltenderer Einsatz von Nitro durch Bots
     inp.boost = c.onGround && (c.flag >= 0 || (wp.dist > 65 && B.role === 'attack') || B.chase) && Math.abs(da) < 0.2 && c.boost > c.st.boost * 0.52 && sp > 10;
     // in der Luft Richtung Fluss: mit Nitro rübergleiten statt ins Wasser zu fallen
-    if (!c.onGround && c.boost > 0.25 && (W.waterAt(c.x + c.vx * 0.9, c.y + c.vy * 0.9) !== null || W.waterAt(c.x, c.y) !== null)) inp.boost = true;
+    c.botOverWater = !c.onGround && (W.waterAt(c.x + c.vx * 0.9, c.y + c.vy * 0.9) !== null || W.waterAt(c.x, c.y) !== null);
+    if (c.botOverWater && c.boost > 0.25) inp.boost = true;
     inp.jump = false;
     if (B.jumpT <= 0 && c.onGround) {
       if ((B.hurtT > 0 && Math.random() < 0.03 * (diff + 1)) || (B.stuckT > 0.5)) {
@@ -1879,7 +1898,7 @@ class Game {
       const lead = [0.15, 0.42, 0.68][diff];
       const sway = Math.sin(B.swayPh) * [0.16, 0.11, 0.06][diff] + (t.onGround === false ? (Math.random() - 0.5) * 0.18 : 0);
       inp.aim = Math.atan2(t.y + t.vy * tt * lead - c.y, t.x + t.vx * tt * lead - c.x) + B.aimErr + sway;
-      const canShoot = B.acqT <= 0 && B.firePauseT <= 0 && dd < c.range * 0.9 && Math.abs(angNorm(inp.aim - c.turret)) < (c.w.splash ? 0.18 : 0.13);
+      const canShoot = B.acqT <= 0 && B.firePauseT <= 0 && dd < Math.min(c.range * 0.9, 105) && Math.abs(angNorm(inp.aim - c.turret)) < (c.w.splash ? 0.18 : 0.13);
       if (canShoot) {
         B.burstT = (B.burstT ?? 1.4) - dt;
         if (B.burstT <= 0) {

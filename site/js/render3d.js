@@ -135,6 +135,12 @@ class Renderer3D {
     sc.left = -95; sc.right = 95; sc.top = 95; sc.bottom = -95; sc.near = 10; sc.far = 400;
     sun.shadow.bias = -0.00045; sun.shadow.normalBias = 0.035;
     s.add(sun); s.add(sun.target);
+    this.tunLights = [];
+    for (let i = 0; i < 3; i++) {
+      const pl = new THREE.PointLight('#fff0c8', 0, 58, 1.15);
+      s.add(pl);
+      this.tunLights.push(pl);
+    }
   }
 
   // ---------------- Boden: Geländenetz mit den 2D-Kacheln als Textur ----------------
@@ -146,31 +152,8 @@ class Renderer3D {
     this.groundTex = new Map(); this.dirty = new Set(); this.lastUpload = 0;
     const aniso = this.gl.capabilities.getMaxAnisotropy();
     const SEG = W.tres || 4;   // Gitterweite = Raster der Höhenkarte
-    // Löcher im Gelände an den Tunnelportalen (sonst sähe man nicht hinein)
-    const portals = [];
-    for (const tn of W.tunnels) { const q = tn.p; portals.push([q[0], q[1]], [q[q.length - 3], q[q.length - 2]]); }
-    const hole = (x, y) => {
-      if (!portals.length) return false;
-      const t = W.tunnelAt(x, y);
-      if (!t) return false;
-      if (W.terrain(x, y) < t.floor + 1.5) return false;
-      return portals.some(([px, py]) => (x - px) ** 2 + (y - py) ** 2 < 26 * 26);
-    };
-    // Zufahrt vor den Portalen: Geländegitter auf Fahrbahnhöhe absenken (sonst verdeckt der Hang die Öffnung)
-    const approach = [];
-    for (const tn of W.tunnels) {
-      const s0 = tn.segs[0], s1 = tn.segs[tn.segs.length - 1];
-      approach.push({ x: s0.ax, y: s0.ay, z: s0.az, ox: -(s0.bx - s0.ax) / s0.L, oy: -(s0.by - s0.ay) / s0.L, hw: tn.w / 2 });
-      approach.push({ x: s1.bx, y: s1.by, z: s1.bz, ox: (s1.bx - s1.ax) / s1.L, oy: (s1.by - s1.ay) / s1.L, hw: tn.w / 2 });
-    }
-    const groundZ = (x, y) => {
-      let z = W.terrain(x, y);
-      for (const a of approach) {
-        const d = (x - a.x) * a.ox + (y - a.y) * a.oy, lat = Math.abs(-(x - a.x) * a.oy + (y - a.y) * a.ox);
-        if (d > -2.5 && d < 9 && lat < a.hw + 2.5) z = Math.min(z, a.z);
-      }
-      return z;
-    };
+    // Löcher im Gelände an den Tunnelportalen (Zufahrt & Überdeckung steuert W.terrain)
+    const hole = (x, y) => W.isPortalHole(x, y);
     for (let ty = 0; ty * T < W.h; ty++) for (let tx = 0; tx * T < W.w; tx++) {
       const cv = W.renderTile(tx, ty, Z, { px: PX, flat3d: true });
       W.tiles.set(tx + ',' + ty, cv);
@@ -181,7 +164,7 @@ class Renderer3D {
       const pos = new Float32Array((n + 1) * (n + 1) * 3), uv = new Float32Array((n + 1) * (n + 1) * 2);
       for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
         const k = j * (n + 1) + i, x = x0 + i * T / n, y = y0 + j * T / n;
-        pos[k * 3] = x; pos[k * 3 + 1] = groundZ(x, y); pos[k * 3 + 2] = y;
+        pos[k * 3] = x; pos[k * 3 + 1] = W.terrain(x, y); pos[k * 3 + 2] = y;
         uv[k * 2] = i / n; uv[k * 2 + 1] = 1 - j / n;
       }
       const idx = [];
@@ -796,6 +779,7 @@ class Renderer3D {
     };
     // Runde Asphalt-Knoten an Straßenenden/Kreuzungen für nahtlose Übergänge
     const addJunctionDisc = (cx, cy, rad) => {
+      if (W.isPortalHole(cx, cy)) return;
       const segs = 16;
       const cz = W.terrain(cx, cy) + 0.069;
       for (let s = 0; s < segs; s++) {
@@ -806,16 +790,17 @@ class Renderer3D {
         L.asph.uv.push(0.5, 0.5, 0.5 + Math.cos(a0) * 0.5, 0.5 + Math.sin(a0) * 0.5, 0.5 + Math.cos(a1) * 0.5, 0.5 + Math.sin(a1) * 0.5);
       }
     };
+    const skipHole = (x, y) => W.isPortalHole(x, y);
     for (const r of W.roads) {
       if (r.k > 2) continue;
-      if (r.k === 2) { this.ribbon(L.foot, r.p, Math.min(r.w, 5), 0.035, 2.2, 0, (x, y) => inOtherRoad(x, y, r, 0.1)); continue; }
-      const skipCurb = (x, y) => inOtherRoad(x, y, r, -0.05);
-      const skipSide = (x, y) => inOtherRoad(x, y, r, 0.25);
-      const skipLine = (x, y) => inOtherRoad(x, y, r, -0.6);
-      // Gehwege als zwei schmale Streifen (unterbrochen an einmündenden Straßen)
+      if (r.k === 2) { this.ribbon(L.foot, r.p, Math.min(r.w, 5), 0.035, 2.2, 0, (x, y) => skipHole(x, y) || inOtherRoad(x, y, r, 0.1)); continue; }
+      const skipCurb = (x, y) => skipHole(x, y) || inOtherRoad(x, y, r, -0.05);
+      const skipSide = (x, y) => skipHole(x, y) || inOtherRoad(x, y, r, 0.25);
+      const skipLine = (x, y) => skipHole(x, y) || inOtherRoad(x, y, r, -0.6);
+      // Gehwege als zwei schmale Streifen (unterbrochen an einmündenden Straßen & Tunnelportalen)
       this.ribbon(L.side, r.p, 1.85, 0.032, 2.2, r.w / 2 + 0.9, skipSide);
       this.ribbon(L.side, r.p, 1.85, 0.032, 2.2, -r.w / 2 - 0.9, skipSide);
-      this.ribbon(L.asph, r.p, r.w + 0.15, 0.07, 8);
+      this.ribbon(L.asph, r.p, r.w + 0.15, 0.07, 8, 0, skipHole);
       this.ribbon(L.curb, r.p, 0.32, 0.098, 2, r.w / 2 + 0.12, skipCurb);
       this.ribbon(L.curb, r.p, 0.32, 0.098, 2, -r.w / 2 - 0.12, skipCurb);
       if (r.k === 0 || r.w >= 9) this.ribbon(L.line, r.p, 0.22, 0.086, 6, 0, skipLine);
@@ -894,29 +879,41 @@ class Renderer3D {
       this.scene.add(baseM, pole, arm, hood, bulb, pool);
     }
   }
-  // ---------------- Brücken mit Geländer und Pfeilern ----------------
+  // ---------------- Brücken, Auffahrten & Dach-Skybridges ----------------
   buildDecks() {
     const W = this.game.world, T = this.makeTextures();
     const concrete = this.mat({ color: '#c4bfb6', map: T.stone.map, normalMap: T.stone.nmap, normalScale: new THREE.Vector2(0.5, 0.5) }, 'Phong');
     const rail = this.mat({ color: '#d0d5da', metalness: 0.6, roughness: 0.35 }, 'Standard');
     const asph = this.mat({ map: T.asphalt, normalMap: T.asphaltN, normalScale: new THREE.Vector2(0.45, 0.45), specular: '#1c1e22', shininess: 14, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }, 'Phong');
     for (const d of W.decks) {
-      const ang = Math.atan2(d.uy, d.ux), z = Math.max(d.az, d.bz), mx = (d.ax + d.bx) / 2, my = (d.ay + d.by) / 2;
-      const grp = new THREE.Group(); grp.position.set(mx, z, my); grp.rotation.y = -ang;
-      const slab = new THREE.Mesh(this.track(new THREE.BoxGeometry(d.L + 0.6, 1.2, d.w)), concrete); slab.position.y = -0.6; grp.add(slab);
-      const road = new THREE.Mesh(this.track(new THREE.PlaneGeometry(d.L, d.w - 2.2)), asph); road.rotation.x = -Math.PI / 2; road.position.y = 0.04; grp.add(road);
-      road.geometry.attributes.uv.array.forEach((v, i, a) => { if (i % 2 === 0) a[i] = v * d.L / 8; });
+      const ang = Math.atan2(d.uy, d.ux), dz = d.bz - d.az, tilt = Math.atan2(dz, d.L), len3D = Math.hypot(d.L, dz);
+      const mx = (d.ax + d.bx) / 2, my = (d.ay + d.by) / 2, mz = (d.az + d.bz) / 2;
+      const grp = new THREE.Group();
+      grp.position.set(mx, mz, my); grp.rotation.order = 'YZX'; grp.rotation.set(0, -ang, tilt);
+      const slab = new THREE.Mesh(this.track(new THREE.BoxGeometry(len3D + 0.4, 1.2, d.w)), concrete); slab.position.y = -0.6; grp.add(slab);
+      const roadW = d.sky ? d.w - 1.2 : d.w - 2.2;
+      const road = new THREE.Mesh(this.track(new THREE.PlaneGeometry(len3D, roadW)), asph); road.rotation.x = -Math.PI / 2; road.position.y = 0.04; grp.add(road);
+      road.geometry.attributes.uv.array.forEach((v, i, a) => { if (i % 2 === 0) a[i] = v * len3D / 8; });
+      // Geländer: bei Skybridges an den Dachanschlüssen wie im Kollisions-Hash zurückgesetzt
+      const t0 = d.sky ? (d.acc ? 0 : Math.min(0.22, 2.3 / d.L)) : 0;
+      const t1 = d.sky ? 1 - Math.min(0.22, 2.3 / d.L) : 1;
+      const rLen = Math.max(0.5, (t1 - t0) * len3D), rMid = ((t0 + t1) * 0.5 - 0.5) * len3D;
+      const curbW = d.sky ? 0.5 : 1.0, curbZ = d.sky ? d.w / 2 - 0.35 : d.w / 2 - 0.6;
       for (const sgn of [1, -1]) {
-        const r = new THREE.Mesh(this.track(roundBox(d.L, 0.28, 0.24, 0.05)), rail); r.position.set(0, 0.92, sgn * (d.w / 2 - 0.16)); grp.add(r);
-        const rMid = new THREE.Mesh(this.track(new THREE.BoxGeometry(d.L, 0.14, 0.14)), rail); rMid.position.set(0, 0.52, sgn * (d.w / 2 - 0.16)); grp.add(rMid);
-        const curb = new THREE.Mesh(this.track(new THREE.BoxGeometry(d.L, 0.25, 1.0)), concrete); curb.position.set(0, 0.12, sgn * (d.w / 2 - 0.6)); grp.add(curb);
-        // Pfeiler an beiden Enden
-        for (const t of [-0.42, 0.42]) {
-          const px = mx + d.ux * d.L * t + -d.uy * sgn * (d.w / 2 - 1.2), py = my + d.uy * d.L * t + d.ux * sgn * (d.w / 2 - 1.2);
-          const gz = W.terrain(px, py), hgt = z - 1.2 - gz + 1;
-          if (hgt < 0.5) continue;
-          const pil = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.7, 0.82, hgt, 12)), concrete);
-          pil.position.set(d.L * t, -1.2 - hgt / 2 + 0.5, sgn * (d.w / 2 - 1.2)); grp.add(pil);
+        const r = new THREE.Mesh(this.track(roundBox(rLen, 0.28, 0.24, 0.05)), rail); r.position.set(rMid, 0.92, sgn * (d.w / 2 - 0.16)); grp.add(r);
+        const rMidBar = new THREE.Mesh(this.track(new THREE.BoxGeometry(rLen, 0.14, 0.14)), rail); rMidBar.position.set(rMid, 0.52, sgn * (d.w / 2 - 0.16)); grp.add(rMidBar);
+        const curb = new THREE.Mesh(this.track(new THREE.BoxGeometry(len3D, 0.25, curbW)), concrete); curb.position.set(0, 0.12, sgn * curbZ); grp.add(curb);
+        // Senkrechte Brückenpfeiler direkt in der Welt (nicht durch Steigung gekippt und nicht in Häusern)
+        const pTs = d.acc ? [0.05, 0.32] : [-0.4, 0.4];
+        for (const pt of pTs) {
+          const px = mx + d.ux * d.L * pt + -d.uy * sgn * (d.w / 2 - 1.0), py = my + d.uy * d.L * pt + d.ux * sgn * (d.w / 2 - 1.0);
+          if (W.buildingAt(px, py)) continue;
+          const topZ = mz + dz * pt, gz = W.terrain(px, py), hgt = topZ - 1.0 - gz + 0.8;
+          if (hgt < 1.2) continue;
+          const pil = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.65, 0.78, hgt, 12)), concrete);
+          pil.position.set(px, gz + hgt / 2 - 0.4, py);
+          pil.castShadow = true; pil.receiveShadow = true;
+          this.scene.add(pil);
         }
       }
       grp.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
@@ -979,45 +976,99 @@ class Renderer3D {
     }
   }
 
-  // ---------------- Tunnel: Röhre mit Licht und Portalen ----------------
+  // ---------------- Tunnel: helle Röhre mit klaren Texturen, Lichtband und trichterförmigen Portalen ----------------
   buildTunnels() {
     const W = this.game.world, T = this.makeTextures();
-    const wt = document.createElement('canvas'); wt.width = 128; wt.height = 256;
-    { const g = wt.getContext('2d'); g.fillStyle = '#9a958c'; g.fillRect(0, 0, 128, 256); g.fillStyle = '#e9e6dc'; g.fillRect(0, 170, 128, 86);
-      g.strokeStyle = 'rgba(0,0,0,0.18)'; g.lineWidth = 2; for (let y = 170; y < 256; y += 14) { g.beginPath(); g.moveTo(0, y); g.lineTo(128, y); g.stroke(); } for (let x = 0; x < 128; x += 21) { g.beginPath(); g.moveTo(x, 170); g.lineTo(x, 256); g.stroke(); }
-      g.fillStyle = '#d8a21f'; g.fillRect(0, 164, 128, 6); g.fillStyle = 'rgba(0,0,0,0.08)'; for (let i = 0; i < 40; i++) g.fillRect((i * 37) % 128, (i * 61) % 160, 6, 3); }
-    const wtex = this.track(new THREE.CanvasTexture(wt)); wtex.wrapS = THREE.RepeatWrapping;
-    const wallM = this.mat({ map: wtex, emissive: '#2a2824', side: THREE.DoubleSide });
-    const ceilM = this.mat({ color: '#6c6862', emissive: '#1e1c19', side: THREE.DoubleSide });
-    const roadM = this.mat({ map: T.asphalt, emissive: '#1a1a1a' });
-    const lampM = this.mat({ color: '#fff3c4', emissive: '#ffe08a' });
-    const rockM = this.mat({ color: '#6f6a5c' });
+    this.tunLampPts = [];
+    // Scharfe Wandtextur: Betonfelder oben, reflektierendes Warnband, helle Keramik-Kacheln unten
+    const wtex = this.canvasTex(256, 512, (g, w, h) => {
+      g.fillStyle = '#8b8882'; g.fillRect(0, 0, w, 336);
+      g.fillStyle = '#97948d';
+      for (let y = 0; y < 336; y += 84) for (let x = 0; x < w; x += 128) g.fillRect(x + 2, y + 2, 124, 80);
+      g.fillStyle = 'rgba(0,0,0,0.16)';
+      for (let y = 84; y <= 336; y += 84) g.fillRect(0, y - 2, w, 3);
+      for (let x = 0; x < w; x += 128) g.fillRect(x, 0, 3, 336);
+      // Gelb-schwarzer Leitstreifen auf Augenhöhe
+      g.fillStyle = '#e5ab20'; g.fillRect(0, 336, w, 18);
+      g.fillStyle = '#24262b';
+      for (let x = -32; x < w + 32; x += 32) { g.beginPath(); g.moveTo(x, 354); g.lineTo(x + 14, 354); g.lineTo(x + 26, 336); g.lineTo(x + 12, 336); g.closePath(); g.fill(); }
+      // Helle reflektierende Kacheln unten für klare Sichtweite
+      g.fillStyle = '#ece9df'; g.fillRect(0, 354, w, h - 354);
+      for (let y = 354; y < h; y += 26) for (let x = 0; x < w; x += 32) {
+        if (((x >> 5) + ((y / 26) | 0)) & 1) { g.fillStyle = 'rgba(0,0,0,0.035)'; g.fillRect(x + 1, y + 1, 30, 24); }
+      }
+      g.strokeStyle = 'rgba(55,52,48,0.22)'; g.lineWidth = 2;
+      for (let y = 354; y <= h; y += 26) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+      for (let x = 0; x < w; x += 32) { g.beginPath(); g.moveTo(x, 354); g.lineTo(x, h); g.stroke(); }
+    }, false);
+    wtex.wrapS = THREE.RepeatWrapping; wtex.wrapT = THREE.ClampToEdgeWrapping;
+    // Scharfe Tunnelfahrbahn: dunkler Asphalt mit Leitstreifen, gestrichelter Mittellinie & hellen Randstreifen
+    const rtex = this.canvasTex(256, 256, (g, w, h) => {
+      g.fillStyle = '#383b42'; g.fillRect(0, 0, w, h);
+      let s = 24680; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+      for (let i = 0; i < 1600; i++) {
+        g.fillStyle = rnd() < 0.5 ? 'rgba(0,0,0,0.10)' : 'rgba(255,255,255,0.06)';
+        g.fillRect(rnd() * w, rnd() * h, 1.5, 1.5);
+      }
+      // Randbankette + weiße Seitenlinien (v = 0..1 quer über Fahrbahn)
+      g.fillStyle = '#7e7b74'; g.fillRect(0, 0, w, 12); g.fillRect(0, h - 12, w, 12);
+      g.fillStyle = '#f2efe6'; g.fillRect(0, 14, w, 5); g.fillRect(0, h - 19, w, 5);
+      // Gestrichelte Mittellinie in Fahrtrichtung (u-Achse)
+      g.fillStyle = '#f5dc6e'; g.fillRect(16, h / 2 - 4, 140, 8);
+    }, true);
+    const hazTex = this.canvasTex(128, 32, (g, w, h) => {
+      g.fillStyle = '#f0b820'; g.fillRect(0, 0, w, h);
+      g.fillStyle = '#1f2228';
+      for (let x = -32; x < w + 32; x += 32) { g.beginPath(); g.moveTo(x, h); g.lineTo(x + 16, h); g.lineTo(x + 32, 0); g.lineTo(x + 16, 0); g.closePath(); g.fill(); }
+    }, true);
+
+    const wallM = this.mat({ map: wtex, emissive: '#34322e', emissiveMap: wtex, emissiveIntensity: 0.32 });
+    const ceilM = this.mat({ color: '#64625e', emissive: '#22211e' });
+    const roadM = this.mat({ map: rtex, emissive: '#1e2024', polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
+    const lampM = this.mat({ color: '#fff8de', emissive: '#ffe9a6' });
+    const abutM = this.mat({ color: '#b4afa4', map: T.stone.map, normalMap: T.stone.nmap, normalScale: new THREE.Vector2(0.5, 0.5) }, 'Phong');
+    const frameM = this.mat({ color: '#d8d2c4', map: T.stone.map });
+    const hazM = this.mat({ map: hazTex, emissive: '#443200' });
+
+    const lampList = [];
     for (const tn of W.tunnels) {
       const wall = [], ceil = [], road = [], ruv = [], wuv = [];
-      const hw = tn.w / 2, H = tn.hgt;
-      let acc = 0;
+      const hw = tn.hw, H = tn.hgt;
+      let acc = 0, nextLamp = 6;
       for (const sg of tn.segs) {
         const ux = (sg.bx - sg.ax) / sg.L, uy = (sg.by - sg.ay) / sg.L, nx = -uy * hw, ny = ux * hw;
         const A = [sg.ax, sg.az, sg.ay], B = [sg.bx, sg.bz, sg.by];
         const P = (pt, s, h) => [pt[0] + nx * s, pt[1] + h, pt[2] + ny * s];
-        for (const s of [1, -1]) {
-          const a0 = P(A, s, 0), b0 = P(B, s, 0), a1 = P(A, s, H), b1 = P(B, s, H);
+        const w0 = acc / 6, w1 = (acc + sg.L) / 6;
+        // Innenwände (FrontSide strikt nach innen gewickelt)
+        {
+          const a0 = P(A, 1, -0.2), b0 = P(B, 1, -0.2), a1 = P(A, 1, H + 0.06), b1 = P(B, 1, H + 0.06);
+          wall.push(...a0, ...a1, ...b1, ...a0, ...b1, ...b0);
+          wuv.push(w0, 0, w0, 1, w1, 1, w0, 0, w1, 1, w1, 0);
+        }
+        {
+          const a0 = P(A, -1, -0.2), b0 = P(B, -1, -0.2), a1 = P(A, -1, H + 0.06), b1 = P(B, -1, H + 0.06);
           wall.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
-          const w0 = acc / 4, w1 = (acc + sg.L) / 4; wuv.push(w0, 0, w1, 0, w1, 1, w0, 0, w1, 1, w0, 1);
+          wuv.push(w0, 0, w1, 0, w1, 1, w0, 0, w1, 1, w0, 1);
         }
-        const l0 = P(A, 1, H), r0 = P(A, -1, H), l1 = P(B, 1, H), r1 = P(B, -1, H);
-        ceil.push(...l0, ...l1, ...r1, ...l0, ...r1, ...r0);
-        const fl0 = P(A, 0.86, 0.06), fr0 = P(A, -0.86, 0.06), fl1 = P(B, 0.86, 0.06), fr1 = P(B, -0.86, 0.06);
-        road.push(...fl0, ...fr0, ...fr1, ...fl0, ...fr1, ...fl1);
-        const u0 = acc / 8, u1 = (acc + sg.L) / 8; acc += sg.L;
-        ruv.push(u0, 1, u0, 0, u1, 0, u0, 1, u1, 0, u1, 1);
-        // Lampen an der Decke
-        for (let d = 6; d < sg.L; d += 14) {
-          const lamp = new THREE.Mesh(this.track(new THREE.BoxGeometry(2.4, 0.2, 0.5)), lampM);
-          lamp.position.set(sg.ax + ux * d, sg.az + (sg.bz - sg.az) * d / sg.L + H - 0.15, sg.ay + uy * d);
-          lamp.rotation.y = -Math.atan2(uy, ux);
-          this.scene.add(lamp);
+        // Decke (FrontSide nach unten -Y gerichtet)
+        const l0 = P(A, 1.02, H), r0 = P(A, -1.02, H), l1 = P(B, 1.02, H), r1 = P(B, -1.02, H);
+        ceil.push(...l0, ...r0, ...r1, ...l0, ...r1, ...l1);
+        // Fahrbahn (FrontSide nach oben +Y gerichtet, sauber über Außenband ohne Z-Fighting)
+        const fl0 = P(A, 0.99, 0.09), fr0 = P(A, -0.99, 0.09), fl1 = P(B, 0.99, 0.09), fr1 = P(B, -0.99, 0.09);
+        road.push(...fl0, ...fl1, ...fr1, ...fl0, ...fr1, ...fr0);
+        const u0 = acc / 8, u1 = (acc + sg.L) / 8;
+        ruv.push(u0, 1, u1, 1, u1, 0, u0, 1, u1, 0, u0, 0);
+        // Durchgehende Deckenbeleuchtung über alle Segmentlängen hinweg (alle 18 m)
+        const rotY = -Math.atan2(uy, ux), tilt = Math.atan2(sg.bz - sg.az, sg.L);
+        while (nextLamp < acc + sg.L - 3) {
+          const d = nextLamp - acc, t = d / sg.L;
+          const lx = sg.ax + ux * d, ly = sg.ay + uy * d, lz = sg.az + (sg.bz - sg.az) * t;
+          lampList.push([lx, lz + H - 0.14, ly, rotY, tilt]);
+          this.tunLampPts.push({ x: lx, y: ly, z: lz + H - 1.2 });
+          nextLamp += 18;
         }
+        acc += sg.L;
       }
       const mk = (arr, m, uvs) => {
         const g = this.track(new THREE.BufferGeometry());
@@ -1026,21 +1077,52 @@ class Renderer3D {
         g.computeVertexNormals();
         const mesh = new THREE.Mesh(g, m); mesh.receiveShadow = true; this.scene.add(mesh); return mesh;
       };
-      mk(wall, wallM, wuv); mk(ceil, ceilM).castShadow = true; mk(road, roadM, ruv);
-      // Portale: Betonrahmen und Stützmauer bis zum Hang
-      const ends = [[tn.segs[0].ax, tn.segs[0].ay, tn.segs[0].az, tn.segs[0]], [tn.segs[tn.segs.length - 1].bx, tn.segs[tn.segs.length - 1].by, tn.segs[tn.segs.length - 1].bz, tn.segs[tn.segs.length - 1]]];
-      for (const [x, y, z, sg] of ends) {
-        const ang = Math.atan2(sg.by - sg.ay, sg.bx - sg.ax);
-        const grp = new THREE.Group(); grp.position.set(x, z, y); grp.rotation.y = -ang;
-        const top = Math.max(H + 2, W.terrain(x, y) - z + 2, 12);
-        const lintel = new THREE.Mesh(this.track(new THREE.BoxGeometry(1.6, top - H, tn.w + 3)), rockM); lintel.position.set(0, H + (top - H) / 2, 0); grp.add(lintel);
+      mk(wall, wallM, wuv);
+      mk(ceil, ceilM);
+      mk(road, roadM, ruv);
+      // Portale: Betonkragen über dem Hangloch, Seitenwangen, Warnbalken und aufgeweitete Flügelwände
+      for (const p of tn.portals) {
+        const ang = Math.atan2(-p.oy, -p.ox);   // +X zeigt ins Tunnelinnere, -X nach außen
+        const grp = new THREE.Group(); grp.position.set(p.x, p.z, p.y); grp.rotation.y = -ang;
+        const collar = new THREE.Mesh(this.track(new THREE.BoxGeometry(13.8, 0.9, tn.w + 8.8)), abutM);
+        collar.position.set(6.6, H + 0.45, 0); grp.add(collar);
+        const lintel = new THREE.Mesh(this.track(new THREE.BoxGeometry(1.8, 2.0, tn.w + 8.8)), frameM);
+        lintel.position.set(0.4, H + 1.0, 0); grp.add(lintel);
+        const haz = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.45, 0.72, tn.w + 0.8)), hazM);
+        haz.position.set(-0.45, H + 0.36, 0); grp.add(haz);
+        const browLamp = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.4, 0.18, tn.w - 1.4)), lampM);
+        browLamp.position.set(0.4, H - 0.08, 0); grp.add(browLamp);
         for (const sgn of [1, -1]) {
-          const side = new THREE.Mesh(this.track(new THREE.BoxGeometry(1.6, top, 9)), rockM); side.position.set(0, top / 2, sgn * (hw + 4.5)); grp.add(side);
+          const side = new THREE.Mesh(this.track(new THREE.BoxGeometry(13.8, H + 1.4, 4.4)), abutM);
+          side.position.set(6.6, (H + 0.4) / 2, sgn * (hw + 2.2)); grp.add(side);
+          const pil = new THREE.Mesh(this.track(new THREE.BoxGeometry(2.2, H + 2.2, 2.8)), frameM);
+          pil.position.set(0.4, (H + 1.8) / 2, sgn * (hw + 1.4)); grp.add(pil);
+          // Trichterförmige Flügelwand von (0, ±hw) nach (-12, ±(hw + 5.5)) – aus Box verformt (sauberes Winding!)
+          const wingG = this.track(new THREE.BoxGeometry(12, 1, 1.4, 1, 1, 1));
+          const wp = wingG.attributes.position;
+          for (let i = 0; i < wp.count; i++) {
+            const vx = wp.getX(i), vy = wp.getY(i), vz = wp.getZ(i);
+            const u = (6 - vx) / 12;
+            const hTop = (H + 1.2) * (1 - u) + 2.4 * u;
+            wp.setXYZ(i, vx - 6, (vy + 0.5) * hTop - 0.5, vz + u * 5.5 * sgn);
+          }
+          wingG.computeVertexNormals();
+          const wing = new THREE.Mesh(wingG, abutM);
+          wing.position.set(0, 0, sgn * (hw + 0.7)); grp.add(wing);
         }
-        const frame = new THREE.Mesh(this.track(new THREE.BoxGeometry(1.8, 1.2, tn.w + 1)), this.mat({ color: '#d8d2c4' })); frame.position.set(0, H + 0.4, 0); grp.add(frame);
         grp.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
         this.scene.add(grp);
       }
+    }
+    if (lampList.length) {
+      const lmMesh = new THREE.InstancedMesh(this.track(new THREE.BoxGeometry(3.4, 0.22, 0.85)), lampM, lampList.length);
+      const d = this.dummy;
+      d.rotation.order = 'YZX';
+      lampList.forEach(([x, z, y, ry, rz], i) => {
+        d.position.set(x, z, y); d.rotation.set(0, ry, rz); d.scale.set(1, 1, 1); d.updateMatrix();
+        lmMesh.setMatrixAt(i, d.matrix);
+      });
+      this.scene.add(lmMesh);
     }
   }
 
@@ -1333,7 +1415,7 @@ class Renderer3D {
     for (const r of W.ramps) {
       const L = r.len, Wd = r.wid, H = r.big ? 2.2 : 1.5;
       const x0 = -L / 2, xLip = -L / 2 + L * 0.22, x1 = L / 2;
-      const hLip = 0.11 * H;
+      const hLip = 0.22 * H;
       const g = this.track(new THREE.BufferGeometry());
       const v = [
         // Sanfter Einlauf-Keil vorne (0..22%)
@@ -1371,7 +1453,7 @@ class Renderer3D {
         cb.castShadow = true;
         grp.add(cb);
       }
-      grp.position.set(r.x, W.terrain(r.x, r.y) - 0.03, r.y); grp.rotation.y = -r.a;
+      grp.position.set(r.x, (r.rz !== undefined ? r.rz : W.terrain(r.x, r.y)) - 0.03, r.y); grp.rotation.y = -r.a;
       this.scene.add(grp);
     }
     // Basen: leuchtende Ringe
@@ -1771,7 +1853,7 @@ class Renderer3D {
       if (z < gz) { if (nearMe) continue; return { x, y, z: gz, kind: W.groundKind === 'roof' ? 'wall' : 'ground' }; }
     }
     if (best) return { x: best.x, y: best.y, z: best.z + 0.9, car: best, kind: 'car', aimDist: bestScore };
-    const t = t0 + 150;
+    const t = t0 + 220;
     return { x: o.x + d.x * t, y: o.z + d.z * t, z: o.y + d.y * t, kind: 'sky' };
   }
 
@@ -1792,6 +1874,28 @@ class Renderer3D {
     const sy = chaseCam ? Math.cos(time * 23) * G.shake * 0.12 : (Math.random() - 0.5) * G.shake * 0.9;
     const pz = G.player && G.player.alive ? G.player.z : G.world.terrain(G.cam.x, G.cam.y);
     this.placeCamera(G.cam.x + sx * (G.camMode === 'chase' ? 0.3 : 1), G.cam.y + sy * (G.camMode === 'chase' ? 0.3 : 1), G.camMode === 'chase' && G.player ? G.player.z : pz, dt);
+    if (this.tunLights && this.tunLampPts && this.tunLampPts.length) {
+      const fx = G.player && G.player.alive ? G.player.x : G.cam.x;
+      const fy = G.player && G.player.alive ? G.player.y : G.cam.y;
+      const picked = [];
+      for (const lp of this.tunLampPts) {
+        const d2 = (lp.x - fx) * (lp.x - fx) + (lp.y - fy) * (lp.y - fy);
+        if (d2 >= 8100) continue;
+        if (picked.length < 3 || d2 < picked[picked.length - 1].d2) {
+          picked.push({ lp, d2 });
+          picked.sort((a, b) => a.d2 - b.d2);
+          if (picked.length > 3) picked.pop();
+        }
+      }
+      for (let i = 0; i < this.tunLights.length; i++) {
+        const pl = this.tunLights[i];
+        if (i < picked.length) {
+          const { lp, d2 } = picked[i];
+          pl.position.set(lp.x, lp.z, lp.y);
+          pl.intensity = 2.8 * clamp(1 - Math.max(0, Math.sqrt(d2) - 55) / 35, 0, 1);
+        } else pl.intensity = 0;
+      }
+    }
     // sichtbarer Bereich (für Minikarte)
     const pts = [[0, 0], [innerWidth, 0], [0, innerHeight], [innerWidth, innerHeight]].map(([x, y]) => this.screenToGround(x, y));
     G.viewRect = { x0: Math.min(...pts.map(p => p.x)), y0: Math.min(...pts.map(p => p.y)), x1: Math.max(...pts.map(p => p.x)), y1: Math.max(...pts.map(p => p.y)) };
