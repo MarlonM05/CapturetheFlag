@@ -9,7 +9,7 @@ auf einer zusammenhängenden 3D-Karte **Ravensburg – Weingarten** aus echten O
 2. Settings → Pages → Build and deployment → Source: **GitHub Actions**.
 3. Nach 1–2 Minuten läuft das Spiel unter `https://marlonm05.github.io/CapturetheFlag/`. Jede Änderung auf `main` wird automatisch veröffentlicht.
 
-**Variante B – Netlify:** `schussental-showdown-netlify.zip` auf <https://app.netlify.com/drop> ziehen oder das Repo per „Import from Git“ verbinden.
+**Variante B – Netlify:** das Repo per „Import from Git“ verbinden (Publish-Ordner `site`, steht schon in `netlify.toml`) oder den Ordner `site` auf <https://app.netlify.com/drop> ziehen.
 Wichtig: Unter *Site configuration → Access & security → Visitor access* muss der Seitenschutz **aus** sein, sonst sehen Freunde nur eine Netlify-Anmeldeseite.
 
 **Variante C – Cloudflare:** `wrangler.jsonc` ist schon da und veröffentlicht den Ordner `site/`. Im Cloudflare-Dashboard
