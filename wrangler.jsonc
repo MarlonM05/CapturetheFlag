@@ -1,0 +1,14 @@
+// Cloudflare Workers (statische Seite): veröffentlicht den Ordner site/.
+// Cloudflare baut automatisch bei jedem Push auf main, sobald das Repo im Cloudflare-Dashboard verbunden ist.
+// "name" muss genau dem Worker-Namen im Dashboard entsprechen.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "capturetheflag",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./site",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none"
+  },
+  "routes": [{ "pattern": "ctf.marlongames.com", "custom_domain": true }]
+}
