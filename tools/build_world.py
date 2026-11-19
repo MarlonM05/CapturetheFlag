@@ -334,14 +334,14 @@ def main():
     rails = []
     for (pa, pb), (za, zb), w in embank:
         lo, hi = (za, zb) if zb >= za else (zb, za)
-        if hi - lo < 2.0:
+        if hi - lo < 1.2:
             continue
         # Abschnitt, auf dem der Damm höher als 1,5 m ist (zur Brücke hin)
-        f0 = 1.5 / (hi - lo)
+        f0 = 0.6 / (hi - lo)   # Leitplanke schon ab 0,6 m Dammhöhe (kein schräges Abheben über die Böschung)
         if zb >= za:
-            p1, p2, z1, z2 = (pa[0] + (pb[0] - pa[0]) * f0, pa[1] + (pb[1] - pa[1]) * f0), pb, za + 1.5, zb
+            p1, p2, z1, z2 = (pa[0] + (pb[0] - pa[0]) * f0, pa[1] + (pb[1] - pa[1]) * f0), pb, za + 0.6, zb
         else:
-            p1, p2, z1, z2 = pa, (pb[0] + (pa[0] - pb[0]) * f0, pb[1] + (pa[1] - pb[1]) * f0), za, zb + 1.5
+            p1, p2, z1, z2 = pa, (pb[0] + (pa[0] - pb[0]) * f0, pb[1] + (pa[1] - pb[1]) * f0), za, zb + 0.6
         L = math.hypot(p2[0] - p1[0], p2[1] - p1[1]) or 1
         rnx, rny = -(p2[1] - p1[1]) / L, (p2[0] - p1[0]) / L
         off = w / 2 + 2.2
@@ -354,7 +354,11 @@ def main():
         L = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
         prof = za + (zb - za) * np.clip(arc / L, 0, 1)
         target = prof - np.maximum(0, d - (w / 2 + 2.6)) * 1.8
-        hz = np.where(d < w / 2 + 2.6 + 20, np.maximum(hz, target), hz)
+        # nicht unter die Brücke hinein aufschütten: Punkte jenseits des brückenseitigen Endes bleiben frei
+        ux, uy = (pb[0] - pa[0]) / L, (pb[1] - pa[1]) / L
+        along = (gx - pa[0]) * ux + (gy - pa[1]) * uy
+        beyond = (along > L - 0.5) if zb >= za else (along < 0.5)
+        hz = np.where((d < w / 2 + 2.6 + 20) & ~beyond, np.maximum(hz, target), hz)
 
     # ---- Basilika-Vorplatz (Terrasse) ----
     tp = terrace_poly()

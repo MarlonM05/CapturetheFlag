@@ -98,6 +98,7 @@ class Renderer3D {
     this.buildBuildings();
     this.buildTrees();
     this.buildStatic();
+    this.mergeStatic();
     this.buildDynamic();
     this.cars = new Map();
     for (const c of game.cars) this.cars.set(c, this.makeCar(c));
@@ -121,6 +122,55 @@ class Renderer3D {
       this.scene.environment = this.envRT.texture; this.disposables.push(this.envRT);
     } catch (e) { /* ohne Spiegelungen weiter */ }
   }
+  // Statische Einzelobjekte (Brücken, Geländer, Pfeiler, Mauern, Rampen, Wahrzeichen …) nach Material und
+  // Kartenbereich zu wenigen großen Meshes zusammenfassen: viel weniger Draw Calls, kein Laufzeit-Aufwand
+  mergeStatic() {
+    const CELL = 260, groups = new Map(), v = new THREE.Vector3();
+    this.scene.updateMatrixWorld(true);
+    this.scene.traverse(o => {
+      if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh || o.userData.dyn || !o.visible || !o.geometry || !o.geometry.attributes.position) return;
+      const m = o.material;
+      if (!m || Array.isArray(m) || m.transparent || o === this.sky) return;
+      if (o.matrixWorld.determinant() < 0) return;
+      for (let p = o.parent; p; p = p.parent) if (p.userData.dyn || !p.visible) return;
+      v.setFromMatrixPosition(o.matrixWorld);
+      const key = [m.uuid, o.castShadow ? 1 : 0, o.receiveShadow ? 1 : 0, o.renderOrder, Math.floor(v.x / CELL), Math.floor(v.z / CELL)].join('|');
+      let g = groups.get(key); if (!g) { g = []; groups.set(key, g); } g.push(o);
+    });
+    let merged = 0, removed = 0;
+    for (const list of groups.values()) {
+      if (list.length < 2) continue;
+      const m = list[0].material, useColor = !!m.vertexColors;
+      const parts = [];
+      let n = 0, hasUv = false;
+      for (const o of list) {
+        let geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+        if (!geo.attributes.normal) geo.computeVertexNormals();
+        geo.applyMatrix4(o.matrixWorld);
+        if (geo.attributes.uv) hasUv = true;
+        parts.push(geo); n += geo.attributes.position.count;
+      }
+      const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = hasUv ? new Float32Array(n * 2) : null, col = useColor ? new Float32Array(n * 3).fill(1) : null;
+      let k = 0;
+      for (const geo of parts) {
+        const c = geo.attributes.position.count;
+        pos.set(geo.attributes.position.array, k * 3); nor.set(geo.attributes.normal.array, k * 3);
+        if (uv && geo.attributes.uv) uv.set(geo.attributes.uv.array.subarray(0, c * 2), k * 2);
+        if (col && geo.attributes.color) col.set(geo.attributes.color.array.subarray(0, c * 3), k * 3);
+        k += c; geo.dispose();
+      }
+      const out = this.track(new THREE.BufferGeometry());
+      out.setAttribute('position', new THREE.BufferAttribute(pos, 3)); out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+      if (uv) out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      if (col) out.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      out.computeBoundingSphere();
+      const mesh = new THREE.Mesh(out, m);
+      mesh.castShadow = list[0].castShadow; mesh.receiveShadow = list[0].receiveShadow; mesh.renderOrder = list[0].renderOrder;
+      for (const o of list) { o.parent.remove(o); removed++; }
+      this.scene.add(mesh); merged++;
+    }
+    this.mergeInfo = { merged, removed };
+  }
   // ---------------- Licht ----------------
   buildLights() {
     const s = this.scene;
@@ -130,7 +180,8 @@ class Renderer3D {
     s.add(fill);
     const sun = this.sun = new THREE.DirectionalLight('#fff4e0', 0.98);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    const mobile = ('ontouchstart' in window && navigator.maxTouchPoints > 0) || Math.min(screen.width, screen.height) < 600;
+    sun.shadow.mapSize.set(mobile ? 1024 : 2048, mobile ? 1024 : 2048);
     const sc = sun.shadow.camera;
     sc.left = -95; sc.right = 95; sc.top = 95; sc.bottom = -95; sc.near = 10; sc.far = 400;
     sun.shadow.bias = -0.00045; sun.shadow.normalBias = 0.035;
@@ -659,7 +710,7 @@ class Renderer3D {
       for (const m of [mB, mW, mC]) { m.castShadow = true; m.receiveShadow = true; this.scene.add(m); }
     }
     if (chimneys.length) {
-      const mc = new THREE.InstancedMesh(this.track(roundBox(0.8, 2.0, 0.8, 0.06)), this.mat({ color: '#8a4a3a', map: T.stone.map }), chimneys.length), d = this.dummy;
+      const mc = new THREE.InstancedMesh(this.track(new THREE.BoxGeometry(0.8, 2.0, 0.8)), this.mat({ color: '#8a4a3a', map: T.stone.map }), chimneys.length), d = this.dummy;
       chimneys.forEach(([x, z, y], i) => { d.position.set(x, z + 1.0, y); d.rotation.set(0, 0, 0); d.scale.set(1, 1, 1); d.updateMatrix(); mc.setMatrixAt(i, d.matrix); });
       mc.castShadow = true; this.scene.add(mc);
     }
@@ -848,9 +899,9 @@ class Renderer3D {
       const metalM = this.mat({ color: '#343a42', metalness: 0.65, roughness: 0.38 }, 'Standard');
       const baseGeo = this.track(new THREE.CylinderGeometry(0.14, 0.20, 0.9, 8));
       const poleGeo = this.track(new THREE.CylinderGeometry(0.065, 0.11, 5.2, 8));
-      const armGeo = this.track(roundBox(1.15, 0.09, 0.11, 0.03));
-      const hoodGeo = this.track(roundBox(0.72, 0.14, 0.38, 0.05));
-      const bulbGeo = this.track(roundBox(0.56, 0.08, 0.28, 0.03));
+      const armGeo = this.track(new THREE.BoxGeometry(1.15, 0.09, 0.11));
+      const hoodGeo = this.track(new THREE.BoxGeometry(0.72, 0.14, 0.38));
+      const bulbGeo = this.track(new THREE.BoxGeometry(0.56, 0.08, 0.28));
       const poolTex = this.canvasTex(64, 64, (g, w, h) => {
         const gr = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
         gr.addColorStop(0, 'rgba(255,235,175,0.22)'); gr.addColorStop(0.55, 'rgba(255,225,150,0.08)'); gr.addColorStop(1, 'rgba(255,225,150,0)');
@@ -874,7 +925,7 @@ class Renderer3D {
         const px = x + ca * 1.3, py = y + sa * 1.3;
         d.position.set(px, W.terrain(px, py) + 0.11, py); d.rotation.set(0, 0, 0); d.updateMatrix(); pool.setMatrixAt(i, d.matrix);
       });
-      pole.castShadow = true; baseM.castShadow = true; hood.castShadow = true;
+      pole.castShadow = true;   // Kleinteile werfen keinen Schatten (spart Schatten-Durchgang)
       pool.renderOrder = 5;
       this.scene.add(baseM, pole, arm, hood, bulb, pool);
     }
@@ -1022,9 +1073,9 @@ class Renderer3D {
       for (let x = -32; x < w + 32; x += 32) { g.beginPath(); g.moveTo(x, h); g.lineTo(x + 16, h); g.lineTo(x + 32, 0); g.lineTo(x + 16, 0); g.closePath(); g.fill(); }
     }, true);
 
-    const wallM = this.mat({ map: wtex, emissive: '#34322e', emissiveMap: wtex, emissiveIntensity: 0.32 });
-    const ceilM = this.mat({ color: '#64625e', emissive: '#22211e' });
-    const roadM = this.mat({ map: rtex, emissive: '#1e2024', polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
+    const wallM = this.mat({ map: wtex, emissive: '#5a5750', emissiveMap: wtex, emissiveIntensity: 0.55 });   // heller: Innenraum und Ausgang von außen gut sichtbar
+    const ceilM = this.mat({ color: '#77756f', emissive: '#3a3833' });
+    const roadM = this.mat({ map: rtex, emissive: '#2c2f34', polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
     const lampM = this.mat({ color: '#fff8de', emissive: '#ffe9a6' });
     const abutM = this.mat({ color: '#b4afa4', map: T.stone.map, normalMap: T.stone.nmap, normalScale: new THREE.Vector2(0.5, 0.5) }, 'Phong');
     const frameM = this.mat({ color: '#d8d2c4', map: T.stone.map });
@@ -1473,7 +1524,7 @@ class Renderer3D {
       const key = [p.hw, p.h, p.hh].map(v => v.toFixed(2)).join('|');
       let geo = geoCache.get(key);
       if (!geo) { geo = this.track(roundBox(p.hw * 2, p.h, p.hh * 2, Math.min(0.25, p.h * 0.2, p.hw * 0.4, p.hh * 0.4))); geoCache.set(key, geo); }
-      const m = new THREE.Mesh(geo, propMats[p.t]);
+      const m = new THREE.Mesh(geo, propMats[p.t]); m.userData.dyn = true;
       m.position.set(p.x, p.z + p.h / 2, p.y); m.rotation.y = -p.a;
       m.castShadow = true; m.receiveShadow = true;
       this.scene.add(m);
@@ -1485,7 +1536,7 @@ class Renderer3D {
   buildDynamic() {
     const s = this.scene;
     // Geschosse
-    this.bulletMesh = new THREE.InstancedMesh(this.track(new THREE.BoxGeometry(1, 1, 1)), this.track(new THREE.MeshBasicMaterial({ color: '#ffffff' })), 600);
+    this.bulletMesh = new THREE.InstancedMesh(this.track(new THREE.BoxGeometry(1, 1, 1)), this.track(new THREE.MeshBasicMaterial({ color: '#ffffff' })), 1200);
     this.bulletMesh.frustumCulled = false; this.bulletMesh.count = 0;
     s.add(this.bulletMesh);
     // Partikel (normal + leuchtend)
@@ -1811,7 +1862,7 @@ class Renderer3D {
   }
   // Bildschirmpunkt (CSS-Pixel) -> Punkt auf einer waagrechten Ebene in Höhe h
   screenToGround(sx, sy, h = 0) {
-    const ndc = new THREE.Vector2(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1);
+    const ndc = (this._ndc || (this._ndc = new THREE.Vector2())).set(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1);
     this.ray.setFromCamera(ndc, this.camera);
     const o = this.ray.ray.origin, d = this.ray.ray.direction;
     // über dem Horizont: in Blickrichtung weit nach vorne
@@ -1824,7 +1875,7 @@ class Renderer3D {
 
   // Zielpunkt in 3D unter dem Fadenkreuz: Gegner (mit magnetischer Trackpad-Toleranz), Hauswand/Dach, Boden oder Himmel
   aimPoint(sx, sy, c) {
-    const ndc = new THREE.Vector2(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1);
+    const ndc = (this._ndc || (this._ndc = new THREE.Vector2())).set(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1);
     this.ray.setFromCamera(ndc, this.camera);
     const o = this.ray.ray.origin, d = this.ray.ray.direction, W = this.game.world;
     const assistOn = !!(this.game.opts && this.game.opts.autoAim);
@@ -1860,7 +1911,10 @@ class Renderer3D {
   // Auto wurde ersetzt (Nachjoinen / Bot übernimmt): altes Modell entfernen
   removeCar(c) {
     const m = this.cars.get(c);
-    if (m) { this.scene.remove(m.root); this.cars.delete(c); }
+    if (!m) return;
+    this.scene.remove(m.root); this.cars.delete(c);
+    // Geometrien/Materialien des alten Modells freigeben (Gun Game baut bei jedem Waffenwechsel neu)
+    m.root.traverse(o => { if (o.isMesh) { if (o.geometry) o.geometry.dispose(); const mm = Array.isArray(o.material) ? o.material : [o.material]; for (const x of mm) if (x && x !== this.sky.material) x.dispose(); } });
   }
   // ---------------- Bild zeichnen ----------------
   render(dt, time) {
@@ -1897,13 +1951,17 @@ class Renderer3D {
       }
     }
     // sichtbarer Bereich (für Minikarte)
-    const pts = [[0, 0], [innerWidth, 0], [0, innerHeight], [innerWidth, innerHeight]].map(([x, y]) => this.screenToGround(x, y));
-    G.viewRect = { x0: Math.min(...pts.map(p => p.x)), y0: Math.min(...pts.map(p => p.y)), x1: Math.max(...pts.map(p => p.x)), y1: Math.max(...pts.map(p => p.y)) };
+    if (!this.vrT || time - this.vrT > 0.25) {   // Sichtbereich (Minikarte) nur 4× pro Sekunde
+      this.vrT = time;
+      const pts = [[0, 0], [innerWidth, 0], [0, innerHeight], [innerWidth, innerHeight]].map(([x, y]) => this.screenToGround(x, y));
+      G.viewRect = { x0: Math.min(...pts.map(p => p.x)), y0: Math.min(...pts.map(p => p.y)), x1: Math.max(...pts.map(p => p.x)), y1: Math.max(...pts.map(p => p.y)) };
+    }
     // Bodentexturen mit Reifenspuren nachladen
     const now = performance.now();
-    if (this.dirty.size && now - this.lastUpload > 350) {
-      for (const k of this.dirty) { const t = this.groundTex.get(k); if (t) t.needsUpdate = true; }
-      this.dirty.clear(); this.lastUpload = now;
+    if (this.dirty.size && now - this.lastUpload > 1000) {
+      const k = this.dirty.values().next().value; this.dirty.delete(k);
+      const t = this.groundTex.get(k); if (t) t.needsUpdate = true;
+      this.lastUpload = now;
     }
     // Autos
     for (const c of G.cars) {
@@ -1986,7 +2044,7 @@ class Renderer3D {
     const bm = this.bulletMesh, d = this.dummy;
     let bi = 0;
     for (const b of G.bullets) {
-      if (bi >= 600) break;
+      if (bi >= 1200) break;
       const ang = Math.atan2(b.vy, b.vx);
       d.position.set(b.x, b.z, b.y); d.rotation.order = 'YZX'; d.rotation.set(0, -ang, Math.atan2(b.vz || 0, Math.hypot(b.vx, b.vy)));
       if (b.w === WEAPONS.rocket) d.scale.set(1.3, 0.35, 0.35);

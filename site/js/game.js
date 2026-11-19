@@ -508,6 +508,7 @@ class Game {
   update(dt) {
     const W = this.world;
     if (this.isClient) { this.clientUpdate(dt); this.updateCommon(dt); return; }
+    W.stepField(110000);   // Bot-Wegfeld im Hintergrund weiterrechnen (verteilt, keine Ruckler)
     if (this.state === 'countdown') {
       this.countT -= dt;
       const c = Math.ceil(this.countT);
@@ -817,11 +818,12 @@ class Game {
     let vF = c.vx * fx + c.vy * fy, vL = -c.vx * fy + c.vy * fx;
     // Turbo (in der Luft schnellerer Verbrauch gegen unendliches Fliegen)
     c.boosting = playing && inp.boost && c.boost > 0.02 && (thr >= 0 || !onGround);
-    if (c.boosting) { c.boost = Math.max(0, c.boost - dt * (onGround ? 0.85 : 1.2)); }
+    if (c.boosting) { c.boost = Math.max(0, c.boost - dt * (onGround ? 0.85 : 1.7)); }   // in der Luft brennt der Raketenschub schneller ab
     else {
       // Nitro lädt schneller beim Driften, in der Luft nur minimal
-      const bonus = (c.drifting && Math.hypot(c.vx, c.vy) > 8 ? 0.7 : 0) + (!onGround ? 0.08 : 0);
-      c.boost = Math.min(st.boost, c.boost + (st.boostRegen + bonus) * dt);
+      // Nitro lädt nur am Boden nach (in der Luft kein Nachtanken -> keine Dauerflüge)
+      const bonus = c.drifting && Math.hypot(c.vx, c.vy) > 8 ? 0.7 : 0;
+      if (onGround) c.boost = Math.min(st.boost, c.boost + (st.boostRegen + bonus) * dt);
     }
     const wz = W.waterAt(c.x, c.y);
     const surfWater = wz !== null && c.groundKind !== 'deck' && c.groundKind !== 'roof' && c.groundKind !== 'ramp' && c.z < wz + 0.5;
@@ -906,7 +908,7 @@ class Game {
       } else if (pt !== 0 && !nearGround) {
         wantV = -pt * 4.0;   // gezieltes Nicken: S = Nase hoch, W = Nase runter
       } else if (c.boosting && !nearGround) {
-        wantV = c.bot ? clamp((up + (c.botOverWater ? 0.8 : 0.3) - (c.pitch || 0)) * 4, -2, 2) : 0;   // Lage halten, solange geboostet wird (Bots gleiten leicht nach oben, über Wasser steiler)
+        wantV = c.bot ? clamp((up + (c.botOverWater ? 1.15 : 0.3) - (c.pitch || 0)) * 4, -2, 2) : 0;   // Lage halten, solange geboostet wird (Bots über Wasser mit steiler Nase, damit der Schub sie trägt)
       } else {
         wantV = clamp((up - (c.pitch || 0)) * (nearGround ? 9.0 : 4.0), -5.2, 5.2);   // sanft waagerecht ausrichten
       }
@@ -929,12 +931,13 @@ class Game {
       c.a += steer * st.turn * (c.boosting ? 0.58 : 0.36) * dt;
       c.lastSkid = null;
       if (c.boosting) {
-        // Nitro-Schub strikt entlang der Fahrzeugnase: waagerecht bei flacher Nase, Steigen nur mit nach oben gerichteter Nase.
-        // Kein Anti-Gravitations-Auftrieb – erst ab ca. 40° Neigung nach oben überwindet der Schub die Schwerkraft.
-        const pc = clamp(c.pitch || 0, -1.45, 1.45), cpc = Math.cos(pc), spc = Math.sin(pc);
-        const thrust = GRAV * (1.68 + st.accel * 0.005);
-        if (vF < st.speed * 1.5) vF = Math.min(vF + thrust * cpc * dt, st.speed * 1.5);
-        c.vz = Math.min(c.vz + thrust * spc * dt, 26);
+        // Nitro = Raketendüse am Heck: schiebt strikt entlang der echten Fahrzeugnase (auch kopfüber/bei Saltos).
+        // Kein Auftrieb: die Schwerkraft zieht immer voll. Der Schub (~0,9 g) bleibt klar unter der Schwerkraft: Nase hoch streckt den Bogen, trägt aber nicht
+        // -> kurze Bögen statt Dauerflug. Nase runter oder Überschlag drückt das Auto zum Boden.
+        const pc = angNorm(c.pitch || 0), cpc = Math.cos(pc), spc = Math.sin(pc);
+        const thrust = GRAV * (0.86 + st.accel * 0.002);
+        if (cpc >= 0 ? vF < st.speed * 1.5 : true) vF = clamp(vF + thrust * cpc * dt, -st.speed * 0.6, st.speed * 1.5);
+        c.vz = Math.max(-30, Math.min(c.vz + thrust * spc * dt, 16));
         if (Math.random() < 0.8) this.particles.add({ x: c.x - fx * c.def.len * 0.6 * cpc, y: c.y - fy * c.def.len * 0.6 * cpc, zAbs: c.z + 0.6 - spc * c.def.len * 0.5, vz: -spc * 12 - 1, vx: -fx * 12 * cpc + rand(-2, 2), vy: -fy * 12 * cpc + rand(-2, 2), life: 0.35, max: 0.35, size: 0.7, grow: -1.2, color: Math.random() < 0.5 ? '#7ad7ff' : '#ffb347', add: true });
       }
     }
@@ -1819,13 +1822,13 @@ class Game {
       else {
         const qx = Math.round(gx / 6) * 6, qy = Math.round(gy / 6) * 6;
         const key = W.navIdx(qx, qy);
+        // gehaltenes Feld noch gültig? (Speicher wird beim Verdrängen wiederverwendet) – und als benutzt markieren
+        if (B.field) { const ent = W.fields.get(W.nearestFree(B.fieldKey)); if (!ent || ent.d !== B.field) B.field = null; else ent.used = performance.now(); }
         if (key !== B.fieldKey || !B.field) {
-          if ((this.fieldBudgetFrame !== this.frameNo) ) { this.fieldBudgetFrame = this.frameNo; this.fieldBudget = 1; }
-          const cached = W.fields.has(W.nearestFree(key));
-          if (cached || this.fieldBudget > 0) {
-            if (!cached) this.fieldBudget--;
-            B.field = W.field(qx, qy); B.fieldKey = key;
-          }
+          // Wegfeld aus dem Cache oder im Hintergrund anfordern (Berechnung verteilt über mehrere Bilder -> keine Ruckler);
+          // bis es fertig ist, fährt der Bot mit dem alten Feld bzw. direkt aufs Ziel
+          const f = W.requestField(qx, qy);
+          if (f) { B.field = f; B.fieldKey = key; }
         }
         B.wp = B.field ? W.waypoint(B.field, c.x, c.y, 10) : { x: gx, y: gy, dist: dGoal };
         if (!B.wp) B.wp = { x: gx, y: gy, dist: dGoal };

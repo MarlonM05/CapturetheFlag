@@ -858,7 +858,9 @@ class World {
     let f = this.fields.get(key);
     if (f) { f.used = performance.now(); return f.d; }
     const gw = this.gw, gh = this.gh, nav = this.nav;
-    const d = new Uint16Array(gw * gh).fill(65535);
+    // Speicher verdrängter Felder wiederverwenden (keine 1,2-MB-Neuanlage pro Feld -> keine GC-Ruckler)
+    const d = (this.fieldPool && this.fieldPool.pop()) || new Uint16Array(gw * gh);
+    d.fill(65535);
     const q = this.q; let h = 0, t = 0;
     d[idx] = 0; q[t++] = idx;
     while (h < t) {
@@ -873,9 +875,48 @@ class World {
     if (this.fields.size > 14) {
       let oldK = null, oldT = Infinity;
       for (const [k, v] of this.fields) if (v.used < oldT) { oldT = v.used; oldK = k; }
+      (this.fieldPool || (this.fieldPool = [])).push(this.fields.get(oldK).d);
       this.fields.delete(oldK);
     }
     return d;
+  }
+  // Wegfeld im Hintergrund berechnen: Anfrage startet eine Breitensuche, die pro Bild nur ein Stück weiterläuft
+  requestField(x, y) {
+    const idx = this.nearestFree(this.navIdx(x, y));
+    const f = this.fields.get(idx);
+    if (f) { f.used = performance.now(); return f.d; }
+    if (this.pending) return null;   // es läuft schon eine Berechnung
+    const n = this.gw * this.gh;
+    const d = (this.fieldPool && this.fieldPool.pop()) || new Uint16Array(n);
+    d.fill(65535);
+    if (!this.qp) this.qp = new Int32Array(n);
+    d[idx] = 0; this.qp[0] = idx;
+    this.pending = { key: idx, d, h: 0, t: 1 };
+    return null;
+  }
+  stepField(maxPops) {
+    const P = this.pending; if (!P) return;
+    const gw = this.gw, gh = this.gh, nav = this.nav, d = P.d, q = this.qp;
+    let h = P.h, t = P.t, n = 0;
+    while (h < t && n < maxPops) {
+      const i = q[h++], nd = d[i] + 1; n++;
+      const x = i % gw;
+      if (x > 0 && !nav[i - 1] && d[i - 1] > nd) { d[i - 1] = nd; q[t++] = i - 1; }
+      if (x < gw - 1 && !nav[i + 1] && d[i + 1] > nd) { d[i + 1] = nd; q[t++] = i + 1; }
+      if (i >= gw && !nav[i - gw] && d[i - gw] > nd) { d[i - gw] = nd; q[t++] = i - gw; }
+      if (i < gw * (gh - 1) && !nav[i + gw] && d[i + gw] > nd) { d[i + gw] = nd; q[t++] = i + gw; }
+    }
+    P.h = h; P.t = t;
+    if (h >= t) {
+      this.pending = null;
+      this.fields.set(P.key, { d, used: performance.now() });
+      if (this.fields.size > 14) {
+        let oldK = null, oldT = Infinity;
+        for (const [k, v] of this.fields) if (v.used < oldT) { oldT = v.used; oldK = k; }
+        (this.fieldPool || (this.fieldPool = [])).push(this.fields.get(oldK).d);
+        this.fields.delete(oldK);
+      }
+    }
   }
   // Wegpunkt entlang des Feldes ermitteln
   waypoint(d, x, y, steps = 9) {
