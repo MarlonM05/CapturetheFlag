@@ -906,7 +906,7 @@ class Game {
       } else if (pt !== 0 && !nearGround) {
         wantV = -pt * 4.0;   // gezieltes Nicken: S = Nase hoch, W = Nase runter
       } else if (c.boosting && !nearGround) {
-        wantV = c.bot ? clamp((up + 0.3 - (c.pitch || 0)) * 4, -2, 2) : 0;   // Lage halten, solange geboostet wird (Bots gleiten leicht nach oben)
+        wantV = c.bot ? clamp((up + (c.botOverWater ? 0.8 : 0.3) - (c.pitch || 0)) * 4, -2, 2) : 0;   // Lage halten, solange geboostet wird (Bots gleiten leicht nach oben, über Wasser steiler)
       } else {
         wantV = clamp((up - (c.pitch || 0)) * (nearGround ? 9.0 : 4.0), -5.2, 5.2);   // sanft waagerecht ausrichten
       }
@@ -1870,7 +1870,8 @@ class Game {
     // Zurückhaltenderer Einsatz von Nitro durch Bots
     inp.boost = c.onGround && (c.flag >= 0 || (wp.dist > 65 && B.role === 'attack') || B.chase) && Math.abs(da) < 0.2 && c.boost > c.st.boost * 0.52 && sp > 10;
     // in der Luft Richtung Fluss: mit Nitro rübergleiten statt ins Wasser zu fallen
-    if (!c.onGround && c.boost > 0.25 && (W.waterAt(c.x + c.vx * 0.9, c.y + c.vy * 0.9) !== null || W.waterAt(c.x, c.y) !== null)) inp.boost = true;
+    c.botOverWater = !c.onGround && (W.waterAt(c.x + c.vx * 0.9, c.y + c.vy * 0.9) !== null || W.waterAt(c.x, c.y) !== null);
+    if (c.botOverWater && c.boost > 0.25) inp.boost = true;
     inp.jump = false;
     if (B.jumpT <= 0 && c.onGround) {
       if ((B.hurtT > 0 && Math.random() < 0.03 * (diff + 1)) || (B.stuckT > 0.5)) {
